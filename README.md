@@ -107,11 +107,14 @@ Référence du protocole : [transferit-py](https://github.com/viperadnan-git/tra
 3. **Domaine** : `transfer.syspros.ch` est déclaré en domaine personnalisé dans `wrangler.jsonc` ;
    le DNS se crée au déploiement. Pas d'URL `*.workers.dev` (`workers_dev: false`).
 4. **Déployer** : `npm run deploy`.
-5. **Déploiement automatique** (Workers Builds) : dans le tableau de bord Cloudflare, Workers &
-   Pages → `transfer` → Settings → Builds → Connect, dépôt `SysPros-Sarl/transfer`, branche `main`,
-   commande de build vide, commande de déploiement `npx wrangler deploy`. Chaque push sur `main`
-   redéploie le Worker. La première fois, Cloudflare demande d'installer son application GitHub
-   sur l'organisation SysPros-Sarl.
+5. **Déploiement automatique** (Workers Builds, en place depuis le 16.11.2026) : chaque push sur
+   `main` redéploie le Worker. Réglages : Workers & Pages → `transfer` → Settings → Builds,
+   dépôt `SysPros-Sarl/transfer`, branche `main`, build `npm ci`, déploiement
+   `npx wrangler deploy`, chemin `/`.
+   Si le bouton GitHub de Cloudflare ouvre la page d'installation de l'application GitHub alors
+   qu'elle est déjà installée sur SysPros-Sarl : Configure, cocher « Only select repositories »
+   puis de nouveau « All repositories » pour activer Save, et Save. Rien ne change côté GitHub,
+   mais GitHub renvoie alors vers Cloudflare, qui affiche le choix du dépôt.
 
 ## Développement local
 
