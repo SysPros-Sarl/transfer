@@ -11,7 +11,6 @@
   // Pas d'URL *.workers.dev : le service ne répond que sur transfer.syspros.ch.
   "workers_dev": false,
   "preview_urls": false,
-  "dev": { "host": "localhost" },
 
   // Les envois chiffrent chaque octet dans le Worker : ~10 ms de CPU par Mio mesurés sur
   // Cloudflare, ~1 s par partie de 90 Mio. Il faut Workers Paid : les 10 ms par requête du plan

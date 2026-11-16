@@ -263,9 +263,19 @@ export class WsUploader {
     const r = await fetch(this.url, { headers: { Upgrade: "websocket" } });
     const ws = r.webSocket;
     if (!ws) throw new Error(`upload server refused the WebSocket (HTTP ${r.status})`);
+    // Since compatibility date 2026, binary messages default to Blob (the WebSocket
+    // standard). Ask for ArrayBuffers, and still accept Blobs, in arrival order.
+    ws.binaryType = "arraybuffer";
     ws.accept();
     const drop = () => { if (this.ws === ws) { this.ws = null; this.wake(); } };
-    ws.addEventListener("message", (e) => this.onMessage(e.data));
+    let inbox = Promise.resolve();
+    ws.addEventListener("message", (e) => {
+      const d = e.data;
+      inbox = inbox
+        .then(() => (typeof Blob !== "undefined" && d instanceof Blob ? d.arrayBuffer() : d))
+        .then((m) => this.onMessage(m))
+        .catch((err) => { this.err = err; this.wake(); });
+    });
     ws.addEventListener("close", drop);
     ws.addEventListener("error", drop);
     this.ws = ws;

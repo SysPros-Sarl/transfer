@@ -91,7 +91,9 @@ Référence du protocole : [transferit-py](https://github.com/viperadnan-git/tra
 ## Développement local
 
 ```bash
-npx wrangler dev --var PART_MB:6          # petites parties pour tester le découpage
+# --local-upstream : sans lui, le Worker local se croit sur transfer.syspros.ch et ses liens
+# pointent vers la production. PART_MB:6 : petites parties pour tester le découpage.
+npx wrangler dev --port 8787 --local-upstream 127.0.0.1:8787 --var PART_MB:6
 curl -T fichier http://127.0.0.1:8787
 node test/verify-mac.mjs fichier <lien>   # vérifie le MAC comme le téléchargeur de transfer.it
 ```
