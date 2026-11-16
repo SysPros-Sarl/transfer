@@ -1,8 +1,8 @@
 {
-  "name": "transfer-it-worker",
-  "private": true,
+  "name": "transfer",
   "version": "0.1.0",
-  "description": "curl --upload-file wrapper for transfer.it, on Cloudflare Workers",
+  "private": true,
+  "description": "Envoi de fichiers avec curl vers transfer.it, servi par un Cloudflare Worker sur transfer.syspros.ch (SysPros)",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",

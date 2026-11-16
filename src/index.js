@@ -3,6 +3,7 @@ import {
   encodeState, decodeState, listTransfer, plainDownloadUrl,
 } from "./mega.js";
 import { helpText, helpHtml, shScript, ps1Script } from "./pages.js";
+import { FAVICON_SVG } from "./favicon.js";
 
 const SHARE = "https://transfer.it/t/";
 
@@ -18,11 +19,11 @@ export default {
       }
       if (request.method === "DELETE") {
         const d = path.match(/^\/(?:t\/)?([A-Za-z0-9_-]{12})\/([A-Za-z0-9_-]{20,})$/);
-        if (!d) return text(`usage: curl -X DELETE ${base}/t/<id>/<delete-token>\n`, 400);
+        if (!d) return text(`usage : curl -X DELETE ${base}/t/<id>/<jeton>\n`, 400);
         await new Api(d[2]).req({ a: "xd", xh: d[1] });
-        return text("deleted\n");
+        return text("supprimé\n");
       }
-      if (request.method !== "GET" && request.method !== "HEAD") return text("method not allowed\n", 405);
+      if (request.method !== "GET" && request.method !== "HEAD") return text("méthode non autorisée\n", 405);
 
       // /sh, /ps, and /<n>/sh, /<n>/ps for helpers that upload with a download limit
       const s = path.match(/^(?:\/(\d{1,6}))?\/(sh|ps|transfer\.sh|transfer\.ps1)$/);
@@ -35,18 +36,21 @@ export default {
           ? new Response(helpHtml(base, partBytes), { headers: { "content-type": "text/html; charset=utf-8" } })
           : text(helpText(base, partBytes));
       }
-      if (path === "/favicon.ico") return new Response(null, { status: 204 });
+      if (path === "/favicon.svg") {
+        return new Response(FAVICON_SVG, { headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" } });
+      }
+      if (path === "/favicon.ico") return Response.redirect(`${base}/favicon.svg`, 301);
 
       const m = path.match(/^\/(?:t\/)?([A-Za-z0-9_-]{12})(?:\/(.*))?$/);
       if (m) return await download(request, base, m[1], m[2] ? safeDecode(m[2]) : "");
-      return text("not found\n", 404);
+      return text("introuvable\n", 404);
     } catch (e) {
       console.error(e);
-      if (e instanceof MegaError && e.code === -19) return text("no downloads left on this transfer\n", 410);
+      if (e instanceof MegaError && e.code === -19) return text("plus aucun téléchargement disponible pour ce transfert\n", 410);
       if (e instanceof MegaError && [-9, -11, -15, -16].includes(e.code)) {
-        return text("transfer not found: deleted, expired, or wrong token\n", 404);
+        return text("transfert introuvable : supprimé, expiré ou jeton incorrect\n", 404);
       }
-      return text(`error: ${e.message}\n`, 502);
+      return text(`erreur : ${e.message}\n`, 502);
     }
   },
 };
@@ -62,7 +66,7 @@ const encName = (n) => encodeURIComponent(n).replace(/%2F/g, "/");
 
 const deleteUrl = (base, st) => `${base}/t/${st.x}/${st.s}`;
 function links(base, st, name) {
-  return `${SHARE}${st.x}\n${base}/t/${st.x}/${encName(name)}\ndelete: curl -X DELETE ${deleteUrl(base, st)}\n`;
+  return `${SHARE}${st.x}\n${base}/t/${st.x}/${encName(name)}\nsupprimer : curl -X DELETE ${deleteUrl(base, st)}\n`;
 }
 
 // Link-preview bots (chat apps) must not use up a limited download.
@@ -119,15 +123,15 @@ async function upload(request, base, path) {
   const total = multipart ? Number(h("x-total-size")) : h("content-length") !== null ? Number(h("content-length")) : null;
   const offset = multipart ? Number(h("x-offset") || 0) : 0;
   if (multipart && (!Number.isSafeInteger(total) || total < 0 || !Number.isSafeInteger(offset) || offset > total || !isChunkBoundary(offset))) {
-    return text("bad X-Total-Size / X-Offset\n", 400);
+    return text("X-Total-Size / X-Offset invalides\n", 400);
   }
 
   let st;
   if (multipart && h("x-state")) {
     st = decodeState(h("x-state"));
-    if (st.o !== offset) return text(`expected X-Offset ${st.o}, got ${offset}\n`, 409);
+    if (st.o !== offset) return text(`X-Offset attendu : ${st.o}, reçu : ${offset}\n`, 409);
   } else {
-    if (offset !== 0) return text("X-State is required after the first part\n", 400);
+    if (offset !== 0) return text("X-State est requis après la première partie\n", 400);
     st = await startTransfer(name, total);
   }
 
@@ -190,16 +194,16 @@ async function download(request, base, xh, wanted) {
   if (request.method === "HEAD" || isBot(request)) {
     const h = { "accept-ranges": "bytes", "content-type": wanted ? "application/octet-stream" : "text/plain" };
     if (wanted) h["content-disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(wanted)}`;
-    return new Response(request.method === "HEAD" ? null : `${wanted || "files"} shared with transfer\n`, { headers: h });
+    return new Response(request.method === "HEAD" ? null : `${wanted || "fichiers"} partagés via transfer.syspros.ch\n`, { headers: h });
   }
   if (!wanted && wantsHtml(request)) return Response.redirect(SHARE + xh, 302);
   const { api, files } = await listTransfer(xh);
-  if (!files.length) return text("transfer is empty or gone\n", 404);
+  if (!files.length) return text("transfert vide ou supprimé\n", 404);
 
   let file = wanted ? files.find((f) => f.name === wanted) : files.length === 1 ? files[0] : null;
   if (!file) {
     const list = files.map((f) => `${f.name}\t${f.size}\t${base}/t/${xh}/${encName(f.name)}`).join("\n");
-    return text(`${wanted ? `no file named "${wanted}". ` : ""}files in this transfer:\n${list}\n`, wanted ? 404 : 300);
+    return text(`${wanted ? `aucun fichier nommé « ${wanted} ». ` : ""}fichiers de ce transfert :\n${list}\n`, wanted ? 404 : 300);
   }
 
   const headers = {
@@ -213,7 +217,7 @@ async function download(request, base, xh, wanted) {
   const src = await plainDownloadUrl(api, xh, file);
   const range = request.headers.get("range");
   const up = await fetch(src, range ? { headers: { range } } : {});
-  if (!up.ok) return text(`storage server returned HTTP ${up.status}\n`, up.status === 416 ? 416 : 502);
+  if (!up.ok) return text(`le serveur de stockage a répondu HTTP ${up.status}\n`, up.status === 416 ? 416 : 502);
   for (const h of ["content-length", "content-range"]) {
     const v = up.headers.get(h);
     if (v) headers[h] = v;

@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "transfer",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  // crc32 de node:zlib (CRC des paquets envoyés à MEGA).
+  "compatibility_flags": ["nodejs_compat"],
+
+  // La zone syspros.ch doit être sur ce compte Cloudflare ; le DNS est créé au déploiement.
+  "routes": [{ "pattern": "transfer.syspros.ch", "custom_domain": true }],
+  // Pas d'URL *.workers.dev : le service ne répond que sur transfer.syspros.ch.
+  "workers_dev": false,
+  "preview_urls": false,
+  "dev": { "host": "localhost" },
+
+  // Les envois chiffrent chaque octet dans le Worker : ~10 ms de CPU par Mio mesurés sur
+  // Cloudflare, ~1 s par partie de 90 Mio. Il faut Workers Paid : les 10 ms par requête du plan
+  // Free coupent les gros envois (erreur 1102). Paid autorise jusqu'à 5 min.
+  "limits": { "cpu_ms": 300000 },
+
+  "observability": {
+    "enabled": false,
+    "logs": { "enabled": false, "head_sampling_rate": 1 },
+    "traces": { "enabled": false, "head_sampling_rate": 0.1 }
+  },
+
+  "vars": {
+    // Taille des parties (Mio) des scripts /sh et /ps et de la page web. Cloudflare limite le
+    // corps d'une requête à 100 Mo (plans Free et Pro).
+    "PART_MB": "90"
+  }
+}
