@@ -2,7 +2,7 @@ import {
   MIB, Api, MegaError, ChunkCrypto, WsUploader, chunkLen, isChunkBoundary, startTransfer, finalize,
   encodeState, decodeState, listTransfer, plainDownloadUrl, a32ToBytes, bytesToA32, b64u, unb64u, concat,
 } from "./mega.js";
-import { helpText, helpHtml, shScript, ps1Script } from "./pages.js";
+import { helpText, helpHtml, shScript, ps1Script, setParallel } from "./pages.js";
 import { FAVICON_SVG } from "./favicon.js";
 
 const SHARE = "https://transfer.it/t/";
@@ -12,6 +12,7 @@ export default {
     const url = new URL(request.url);
     const base = url.origin;
     const partBytes = Math.max(1, Number(env.PART_MB) || 90) * MIB;
+    setParallel(Number(env.PARALLEL) || 4);
     const path = url.pathname;
     try {
       if (request.method === "PUT" || request.method === "POST") {
@@ -138,7 +139,28 @@ async function upload(request, base, path, partBytes) {
   }
   const st = decodeState(h("x-state"));
   if (h("x-finalize") !== null) return finishParts(request, base, name, maxDl, st, total);
-  return uploadPart(request, st, total, Number(h("x-offset")));
+  const offset = Number(h("x-offset"));
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= total || !isChunkBoundary(offset)) {
+    return text("X-Offset invalide : une partie doit commencer sur une limite de morceau MEGA\n", 400);
+  }
+  if (h("x-progress") === null) {
+    try { return text(await uploadPart(new ExactReader(request.body), st, total, offset)); }
+    catch (e) { return text(`${e.message}\n`, e.status || 502); }
+  }
+  // X-Progress : la réponse part tout de suite et donne chaque seconde les octets que MEGA a
+  // confirmés pour cette partie (« ack <octets> »), puis la ligne « part … » ou « erreur … ».
+  // Cloudflare reçoit la partie bien plus vite que MEGA ne l'accepte : sans cela, le client
+  // ne voit que ce qui est parti vers Cloudflare.
+  const body = new ExactReader(request.body); // avant de répondre : sinon le runtime verrouille le corps
+  const { readable, writable } = new TransformStream();
+  const out = writable.getWriter(), enc = new TextEncoder();
+  const say = (s) => out.write(enc.encode(s)).catch(() => {});
+  (async () => {
+    try { await say(await uploadPart(body, st, total, offset, (n) => say(`ack ${n}\n`))); }
+    catch (e) { await say(`erreur ${e.message}\n`); }
+    finally { await out.close().catch(() => {}); }
+  })();
+  return new Response(readable, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store, no-transform" } });
 }
 
 // One request with the whole file (plain curl -T, or a pipe of unknown size).
@@ -177,17 +199,18 @@ async function uploadWhole(request, base, name, maxDl) {
   }
 }
 
-async function uploadPart(request, st, total, offset) {
-  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= total || !isChunkBoundary(offset)) {
-    return text("X-Offset invalide : une partie doit commencer sur une limite de morceau MEGA\n", 400);
-  }
+// Sends one part; returns its "part …" line. onAck(bytes) is called about once a second with
+// the bytes of this part that MEGA has confirmed.
+async function uploadPart(body, st, total, offset, onAck) {
+  const bad = (msg) => Object.assign(new Error(msg), { status: 400 });
   const cc = await ChunkCrypto.create(st.k);
   const ws = new WsUploader(st.h, st.u);
   await ws.connect();
-  const body = new ExactReader(request.body);
   const macs = [];
   let pos = offset;
   let lastWasFull = true;
+  const acked = () => { let n = pos - offset; for (const c of ws.pending.values()) n -= c.ct.length; return Math.max(0, n); };
+  const timer = onAck ? setInterval(() => onAck(acked()), 1000) : null;
   try {
     while (pos < total) {
       const want = Math.min(chunkLen(pos), total - pos);
@@ -195,7 +218,7 @@ async function uploadPart(request, st, total, offset) {
       if (data.length === 0) break;
       if (data.length < want) {
         await body.drain();
-        return text(`partie mal alignée : elle doit finir sur une limite de morceau ou à la fin du fichier (finit à ${pos + data.length})\n`, 400);
+        throw bad(`partie mal alignée : elle doit finir sur une limite de morceau ou à la fin du fichier (finit à ${pos + data.length})`);
       }
       const { ct, mac } = await cc.encrypt(pos, data);
       await ws.send(pos, ct);
@@ -204,15 +227,16 @@ async function uploadPart(request, st, total, offset) {
       lastWasFull = want === chunkLen(pos - want);
     }
     await body.drain();
-    if (pos === offset) return text("partie vide\n", 400);
+    if (pos === offset) throw bad("partie vide");
     // Last part of a file that ends on a chunk boundary: the empty end chunk.
     if (pos === total && lastWasFull) await ws.send(pos, new Uint8Array(0));
     await ws.drain();
     // If this connection delivered the piece that completed the file, MEGA sends
     // the completion token on it right after.
     const token = ws.sawFinal || ws.token ? await ws.finish(30_000) : null;
-    return text(`part ${offset} ${pos} ${b64u(concat(...macs))}${token ? ` ${b64u(token)}` : ""}\n`);
+    return `part ${offset} ${pos} ${b64u(concat(...macs))}${token ? ` ${b64u(token)}` : ""}\n`;
   } finally {
+    if (timer) clearInterval(timer);
     ws.close();
   }
 }

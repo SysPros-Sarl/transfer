@@ -27,6 +27,9 @@
     // Taille des parties (Mio) des scripts /sh et /ps et de la page web. Cloudflare limite le
     // corps d'une requête à 100 Mo (plans Free et Pro) ; la première partie fait 512 Kio de
     // plus, donc 94 au maximum.
-    "PART_MB": "90"
+    "PART_MB": "90",
+    // Nombre de parties envoyées en même temps par les scripts et la page web (1 à 32). 12 était
+    // plus lent que 4 (mesuré le 16.11.2026) : c'est MEGA qui limite le débit d'un transfert.
+    "PARALLEL": "4"
   }
 }

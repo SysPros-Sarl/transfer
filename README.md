@@ -46,15 +46,26 @@ option « un seul téléchargement », bouton de suppression) et rappelle ces co
   d'upload de MEGA par WebSocket, puis rattache le fichier et ferme le transfert (`xp`, `xc`).
 - **Au-delà de 100 Mo** : Cloudflare refuse les requêtes plus grosses (HTTP 413) avant même le
   Worker. Les scripts `/sh` et `/ps` et la page web découpent le fichier en parties de 90 Mo
-  (`PART_MB`) et en envoient **4 en même temps**. Pendant qu'une partie part de Cloudflare vers
-  MEGA, les autres arrivent : le débit reste constant au lieu d'alterner envoi et attente. Le
-  Worker ne garde rien entre les requêtes.
+  (`PART_MB`) et en envoient **4 en même temps** (`PARALLEL` dans `wrangler.jsonc` ; pour un
+  envoi, `TRANSFER_PARALLEL=8 sh -s fichier` avec le script sh). Le Worker ne garde rien entre
+  les requêtes.
+
+  Cloudflare reçoit une partie aussi vite que la connexion le permet, puis le Worker la transmet à
+  MEGA à la vitesse de MEGA. Vu du poste, l'envoi se fait donc par à-coups : les parties partent
+  vite, puis le poste attend. C'est MEGA qui fixe le débit d'un transfert. Mesuré le 16.11.2026
+  (1,76 Go) : 308 s avec 4 parties à la fois, 461 s avec 12 ; en ajouter n'accélère pas.
+- **Progression** : les trois clients affichent chaque seconde le pourcentage, la quantité
+  arrivée chez MEGA, la vitesse (Mo/s et Mbit/s, lissée), le temps restant et les parties
+  terminées, puis la moyenne à la fin. Avec `X-Progress: 1`, le Worker répond tout de suite et
+  écrit chaque seconde `ack <octets>`, les octets de la partie que MEGA a confirmés, avant la
+  ligne `part …` (ou `erreur …`). Sans cet en-tête, il ne répond qu'à la fin.
 
   ```
   1. PUT /[n/]<nom>  X-Total-Size: <octets>                       (corps vide)
      → "init <état> <taille de partie>"
-  2. PUT /[n/]<nom>  X-Total-Size  X-State: <état>  X-Offset: <début>   (la partie, dans n'importe quel ordre)
-     → "part <début> <fin> <MAC des morceaux> [<jeton de fin>]"
+  2. PUT /[n/]<nom>  X-Total-Size  X-State: <état>  X-Offset: <début>  [X-Progress: 1]
+     (la partie, dans n'importe quel ordre)
+     → ["ack <octets>" …] "part <début> <fin> <MAC des morceaux> [<jeton de fin>]"
   3. PUT /[n/]<nom>  X-Total-Size  X-State  X-Finalize: 1         (corps : les réponses « part »)
      → <liens>
   ```
@@ -96,6 +107,11 @@ Référence du protocole : [transferit-py](https://github.com/viperadnan-git/tra
 3. **Domaine** : `transfer.syspros.ch` est déclaré en domaine personnalisé dans `wrangler.jsonc` ;
    le DNS se crée au déploiement. Pas d'URL `*.workers.dev` (`workers_dev: false`).
 4. **Déployer** : `npm run deploy`.
+5. **Déploiement automatique** (Workers Builds) : dans le tableau de bord Cloudflare, Workers &
+   Pages → `transfer` → Settings → Builds → Connect, dépôt `SysPros-Sarl/transfer`, branche `main`,
+   commande de build vide, commande de déploiement `npx wrangler deploy`. Chaque push sur `main`
+   redéploie le Worker. La première fois, Cloudflare demande d'installer son application GitHub
+   sur l'organisation SysPros-Sarl.
 
 ## Développement local
 
@@ -126,8 +142,9 @@ node test/verify-mac.mjs fichier <lien>   # vérifie le MAC comme le télécharg
   transfer.it garde la clé de déchiffrement chez MEGA ; ce n'est pas du chiffrement de bout en bout.
 - **API non officielle** : le Worker utilise l'API privée de transfer.it. Si MEGA la change, il
   faudra l'adapter.
-- **Vitesse** : chaque partie passe par une seule connexion WebSocket vers MEGA ; c'est l'envoi de
-  4 parties en parallèle qui donne le débit. `curl -T` seul (jusqu'à 100 Mo) reste en une partie.
+- **Vitesse** : MEGA fixe le débit d'un transfert. Il a varié de 4 à 10 Mo/s dans les mesures
+  du 16.11.2026, quel que soit le nombre de parties en parallèle. `curl -T` seul (jusqu'à 100 Mo)
+  reste en une partie.
 
 ## Pistes
 

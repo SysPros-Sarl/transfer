@@ -139,6 +139,7 @@ code{font:500 12.5px/1.7 var(--font-mono)}
 #jobs .name{font-weight:600}
 #jobs .bar-p{height:4px;margin-top:8px;background:var(--surface-2);border-radius:2px;overflow:hidden}
 #jobs .bar-p i{display:block;height:100%;width:0;background:var(--brand);transition:width .2s}
+#jobs .stat{margin-top:6px;font:12px/1.4 var(--font-mono);color:var(--muted);font-variant-numeric:tabular-nums}
 #jobs .out{margin-top:10px;display:grid;gap:8px;justify-items:start}
 #jobs .out a{color:var(--mark);font-weight:600}
 #jobs .err{margin-top:8px;color:var(--alert)}
@@ -237,38 +238,61 @@ drop.ondragover = function (e) { e.preventDefault(); drop.classList.add("over");
 drop.ondragleave = function () { drop.classList.remove("over"); };
 drop.ondrop = function (e) { e.preventDefault(); drop.classList.remove("over"); Array.from(e.dataTransfer.files).forEach(send); };
 
-function put(url, body, headers, onProgress) {
+function lastLine(t) { var l = t.trim().split("\\n"); return l[l.length - 1]; }
+
+// onAck : pour une partie (X-Progress), octets que MEGA a confirmés (lignes « ack » de la réponse).
+function put(url, body, headers, onProgress, onAck) {
   return new Promise(function (resolve, reject) {
     var x = new XMLHttpRequest();
     x.open("PUT", url);
     for (var k in headers) if (headers[k] !== "") x.setRequestHeader(k, headers[k]);
     x.upload.onprogress = function (e) { onProgress(e.loaded); };
+    if (onAck) x.onprogress = function () {
+      var t = x.responseText, i = t.lastIndexOf("ack ");
+      if (i >= 0) onAck(parseInt(t.slice(i + 4), 10) || 0);
+    };
     x.onload = function () { resolve({ status: x.status, text: x.responseText, del: x.getResponseHeader("x-url-delete") }); };
     x.onerror = function () { reject(new Error("erreur réseau")); };
     x.send(body);
   });
 }
 
-async function putRetry(url, body, headers, onProgress) {
+async function putRetry(url, body, headers, onProgress, onAck) {
   for (var tries = 1; ; tries++) {
     try {
-      var res = await put(url, body, headers, onProgress);
-      if (res.status < 400) return res;
-      if (res.status < 500 || tries >= 3) throw new Error(res.text.trim());
+      var res = await put(url, body, headers, onProgress, onAck);
+      if (res.status < 400 && !onAck) return res;
+      // Partie : la réponse part avant la fin ; réussite = dernière ligne « part … », sinon « erreur … ».
+      if (res.status < 400 && lastLine(res.text).indexOf("part ") === 0) return { status: res.status, text: lastLine(res.text) };
+      var msg = res.status < 400 ? lastLine(res.text) : res.text.trim();
+      if ((res.status >= 400 && res.status < 500) || tries >= 3) throw new Error(msg);
     } catch (e) { if (tries >= 3 || !/réseau/.test(e.message)) throw e; }
     await new Promise(function (r) { setTimeout(r, 2000); });
   }
 }
 
+function size(x) { return x >= 1073741824 ? (x / 1073741824).toFixed(2) + " Go" : Math.round(x / 1048576) + " Mo"; }
+function dur(x) { x = Math.round(x); return x >= 3600 ? Math.floor(x / 3600) + " h " + String(Math.floor(x % 3600 / 60)).padStart(2, "0") : x >= 60 ? Math.round(x / 60) + " min" : x + " s"; }
+
 function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; }
 
 async function send(file) {
-  var li = el("li"), name = el("div", "name", file.name), track = el("div", "bar-p"), bar = el("i");
-  track.append(bar); li.append(name, track); jobs.prepend(li);
+  var li = el("li"), name = el("div", "name", file.name), track = el("div", "bar-p"), bar = el("i"), stat = el("div", "stat");
+  track.append(bar); li.append(name, track, stat); jobs.prepend(li);
   var once = document.getElementById("once").checked;
   if (once) name.textContent += " · 1 téléchargement";
   var url = (once ? "/1/" : "/") + encodeURIComponent(file.name);
-  var show = function (n) { bar.style.width = (file.size ? Math.min(100, n / file.size * 100) : 100) + "%"; };
+  // Progression : pourcentage, octets envoyés, vitesse lissée (mise à jour chaque seconde), temps restant.
+  var t0 = Date.now(), pt = t0, pb = 0, sp = 0;
+  var show = function (n) {
+    bar.style.width = (file.size ? Math.min(100, n / file.size * 100) : 100) + "%";
+    var now = Date.now();
+    if (now - pt < 1000) return;
+    var v = Math.max(0, (n - pb) / ((now - pt) / 1000));
+    sp = sp ? 0.8 * sp + 0.2 * v : v; pb = n; pt = now;
+    stat.textContent = Math.floor(n / file.size * 100) + " % · " + size(n) + " / " + size(file.size) + " · " +
+      (sp / 1048576).toFixed(1) + " Mo/s (" + Math.round(sp * 8 / 1e6) + " Mbit/s) · reste " + (sp ? dur((file.size - n) / sp) : "?");
+  };
   try {
     var res;
     if (file.size <= PART) {
@@ -277,14 +301,19 @@ async function send(file) {
       // Gros fichier : ouverture, parties ${PARALLEL} à la fois, puis fin avec les sommes de contrôle.
       var init = (await putRetry(url, "", { "X-Total-Size": file.size }, function () {})).text.trim().split(" ");
       var state = init[1], pp = +init[2], parts = [];
-      for (var i = 0, s = 0; s < file.size; i++) { var e = Math.min((i + 1) * pp + 524288, file.size); parts.push({ s: s, e: e, sent: 0 }); s = e; }
+      for (var i = 0, s = 0; s < file.size; i++) { var e = Math.min((i + 1) * pp + 524288, file.size); parts.push({ s: s, e: e, acked: 0 }); s = e; }
       var outs = [], next = 0;
+      // La progression suit ce que MEGA a confirmé, pas ce qui est parti vers Cloudflare (qui
+      // accepte une partie bien plus vite que MEGA).
+      var sendPart = function (p) {
+        return putRetry(url, file.slice(p.s, p.e), { "X-Total-Size": file.size, "X-State": state, "X-Offset": p.s, "X-Progress": "1" },
+          function () {}, function (n) { p.acked = n; show(parts.reduce(function (t, q) { return t + q.acked; }, 0)); });
+      };
       var worker = async function () {
         while (next < parts.length) {
           var k = next++, p = parts[k];
-          var r = await putRetry(url, file.slice(p.s, p.e), { "X-Total-Size": file.size, "X-State": state, "X-Offset": p.s },
-            function (n) { p.sent = n; show(parts.reduce(function (t, q) { return t + q.sent; }, 0)); });
-          p.sent = p.e - p.s; outs[k] = r.text.trim();
+          var r = await sendPart(p);
+          p.acked = p.e - p.s; outs[k] = r.text;
         }
       };
       var workers = []; for (var w = 0; w < ${PARALLEL}; w++) workers.push(worker());
@@ -294,7 +323,7 @@ async function send(file) {
         if (!/jeton/.test(err.message)) throw err;
         // Le jeton de fin s'est perdu : on renvoie la dernière partie puis on retente.
         var L = parts.length - 1;
-        outs[L] = (await putRetry(url, file.slice(parts[L].s, parts[L].e), { "X-Total-Size": file.size, "X-State": state, "X-Offset": parts[L].s }, function () {})).text.trim();
+        outs[L] = (await sendPart(parts[L])).text;
         res = await fin();
       }
     }
@@ -302,6 +331,8 @@ async function send(file) {
       var t = res.text.trim();
       var lines = t.split("\\n");
       bar.style.width = "100%";
+      var secs = Math.max(1, (Date.now() - t0) / 1000);
+      stat.textContent = size(file.size) + " en " + dur(secs) + " · " + (file.size / secs / 1048576).toFixed(1) + " Mo/s (" + Math.round(file.size / secs * 8 / 1e6) + " Mbit/s) en moyenne";
       var out = el("div", "out"), a = el("a", "", lines[0]);
       a.href = lines[0]; a.target = "_blank"; a.rel = "noopener";
       var cmd = el("pre"); cmd.append(el("code", "", "curl -O " + lines[1]));
@@ -331,7 +362,9 @@ async function send(file) {
 
 // ---------------------------------------------------------------- scripts
 
-const PARALLEL = 4; // parties envoyées en même temps
+// Parties envoyées en même temps (variable PARALLEL du Worker, 4 par défaut).
+let PARALLEL = 4;
+export function setParallel(n) { if (n >= 1 && n <= 32) PARALLEL = Math.floor(n); }
 
 export function shScript(b, part) {
   return `# transfer : envoi de fichiers vers transfer.it via ${b} (SysPros)
@@ -382,23 +415,54 @@ _transfer_parts() {
   done
   TR_FILE=$1; TR_URL=$2; TR_SIZE=$3; TR_N=$_i
   export TR_FILE TR_URL TR_SIZE TR_STATE TR_DIR TR_N
+  : > "$TR_DIR/done"; : > "$TR_DIR/failed"; : > "$TR_DIR/w.out"
   cat > "$TR_DIR/part.sh" <<'PART'
 i=$1; s=$2; e=$3; try=0
+if [ "$i" = w ]; then
+  # Progression, chaque seconde : parties finies + octets que MEGA a confirmés pour les parties
+  # en cours (lignes « ack » que le Worker renvoie pendant l'envoi), vitesse lissée, temps restant.
+  t0=$(date +%s); pt=$t0; pb=0; sp=0
+  while :; do
+    sleep 1; now=$(date +%s)
+    set -- $(awk -v now="$now" -v t0="$t0" -v pt="$pt" -v pb="$pb" -v sp="$sp" -v total="$TR_SIZE" -v n="$TR_N" '
+      function h(x) { return x >= 1073741824 ? sprintf("%.2f Go", x / 1073741824) : sprintf("%.0f Mo", x / 1048576) }
+      function d(x) { x = int(x); return x >= 3600 ? sprintf("%d h %02d", x / 3600, x % 3600 / 60) : x >= 60 ? sprintf("%d min", (x + 30) / 60) : sprintf("%d s", x) }
+      FILENAME ~ /\\/list$/ { size[$1] = $3 - $2; next }
+      FILENAME ~ /\\/done$/ { ok[$1] = 1; nd++; next }
+      FILENAME ~ /\\/failed$/ { nf++; next }
+      $1 == "ack" { k = FILENAME; sub(/.*\\//, "", k); sub(/\\.out$/, "", k); a[k] = $2 }
+      END {
+        for (k in ok) b += size[k]
+        for (k in a) if (!(k in ok)) b += a[k]
+        if (b > total) b = total
+        if (now > pt) { v = (b - pb) / (now - pt); if (v < 0) v = 0; sp = sp > 0 ? 0.8 * sp + 0.2 * v : v }
+        t = now > t0 ? now - t0 : 1
+        if (nf > 0 && nd + nf >= n) line = sprintf("transfer : %d partie(s) en échec", nf)
+        else if (nd + nf >= n) line = sprintf("transfer : %s en %s, %.1f Mo/s (%d Mbit/s) en moyenne", h(total), d(t), total / t / 1048576, total / t * 8 / 1000000)
+        else line = sprintf("transfer : %d %% · %s / %s · %.1f Mo/s (%d Mbit/s) · reste %s · %d/%d parties", b * 100 / total, h(b), h(total), sp / 1048576, sp * 8 / 1000000, sp > 0 ? d((total - b) / sp) : "?", nd, n)
+        printf "\\r%s\\033[K", line > "/dev/stderr"
+        printf "%.0f %.0f %d\\n", b, sp, (nd + nf >= n)
+      }' "$TR_DIR/list" "$TR_DIR/done" "$TR_DIR/failed" "$TR_DIR"/*.out)
+    pb=$1; sp=$2; pt=$now
+    if [ "$3" = 1 ]; then printf '\\n' >&2; exit 0; fi
+  done
+fi
 while :; do
-  if tail -c +"$(( s + 1 ))" "$TR_FILE" | head -c "$(( e - s ))" | curl -sS --fail-with-body -T - \\
-      -H "X-Total-Size: $TR_SIZE" -H "X-State: $TR_STATE" -H "X-Offset: $s" "$TR_URL" > "$TR_DIR/$i.out" 2> "$TR_DIR/$i.err"; then
-    echo "$i" >> "$TR_DIR/done"
-    printf '\\rtransfer : %s/%s parties ' "$(wc -l < "$TR_DIR/done" | tr -d ' ')" "$TR_N" >&2
-    exit 0
-  fi
+  # -N : curl écrit chaque ligne « ack » dès qu'elle arrive. Réussite = dernière ligne « part … ».
+  tail -c +"$(( s + 1 ))" "$TR_FILE" | head -c "$(( e - s ))" | curl -sSN --fail-with-body -T - -H "X-Progress: 1" \\
+    -H "X-Total-Size: $TR_SIZE" -H "X-State: $TR_STATE" -H "X-Offset: $s" "$TR_URL" > "$TR_DIR/$i.out" 2> "$TR_DIR/$i.err"
+  case $(tail -n 1 "$TR_DIR/$i.out") in part\\ *) echo "$i" >> "$TR_DIR/done"; exit 0 ;; esac
   try=$(( try + 1 ))
-  if [ "$try" -ge 3 ]; then printf '\\ntransfer : partie %s : ' "$i" >&2; cat "$TR_DIR/$i.out" "$TR_DIR/$i.err" >&2; exit 1; fi
+  if [ "$try" -ge 3 ]; then
+    printf '\\ntransfer : partie %s : ' "$i" >&2; tail -n 1 "$TR_DIR/$i.out" >&2; cat "$TR_DIR/$i.err" >&2
+    echo "$i" >> "$TR_DIR/failed"; exit 1
+  fi
   sleep 2
 done
 PART
-  printf 'transfer : 0/%s parties ' "$TR_N" >&2
-  if ! xargs -P ${PARALLEL} -L 1 sh "$TR_DIR/part.sh" < "$TR_DIR/list"; then rm -rf "$TR_DIR"; return 1; fi
-  printf '\\n' >&2
+  # La ligne « w » lance l'affichage de la progression, à côté des envois (TRANSFER_PARALLEL=n pour
+  # changer leur nombre).
+  if ! { echo w 0 0; cat "$TR_DIR/list"; } | xargs -P $(( \${TRANSFER_PARALLEL:-${PARALLEL}} + 1 )) -L 1 sh "$TR_DIR/part.sh"; then rm -rf "$TR_DIR"; return 1; fi
   for _try in 1 2; do
     _pr=$(cat "$TR_DIR"/*.out | curl -sS --fail-with-body -X PUT -H "X-Total-Size: $3" -H "X-State: $TR_STATE" \\
       -H "X-Finalize: 1" --data-binary @- "$2") && { printf '%s\\n' "$_pr"; rm -rf "$TR_DIR"; return 0; }
@@ -454,7 +518,15 @@ function transfer {
       $buf = New-Object byte[] 1048576
       $queue = New-Object System.Collections.Queue (,$parts.ToArray())
       $running = New-Object System.Collections.ArrayList
-      $done = 0
+      $done = 0; $doneBytes = [long]0
+      $clock = [Diagnostics.Stopwatch]::StartNew(); $pt = 0.0; $pb = 0.0; $sp = 0.0
+      # Fichier en cours d'écriture par curl : lecture partagée.
+      $read = { param($path)
+        try { $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite'); try { (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() } } catch { '' } }
+      $lines = { param($path) @((& $read $path) -split "[\\r\\n]+" | Where-Object { $_ }) }
+      # Octets de la partie que MEGA a confirmés : dernière ligne « ack <octets> » renvoyée par le Worker.
+      $acked = { param($path) $a = & $lines $path | Where-Object { $_ -like 'ack *' } | Select-Object -Last 1; if ($a) { [double]$a.Substring(4) } else { 0 } }
+      $fmt = { param($x) if ($x -ge 1GB) { '{0:N2} Go' -f ($x / 1GB) } else { '{0:N0} Mo' -f ($x / 1MB) } }
       while ($queue.Count -gt 0 -or $running.Count -gt 0) {
         while ($running.Count -lt $parallel -and $queue.Count -gt 0) {
           $p = $queue.Dequeue(); $bin = Join-Path $dir "$($p.i).bin"
@@ -469,8 +541,9 @@ function transfer {
               }
             } finally { $in.Dispose(); $out.Dispose() }
           }
-          $cargs = '-sS --fail-with-body -T "' + $bin + '" -H "X-Total-Size: ' + $size + '" -H "X-State: ' + $state + '" -H "X-Offset: ' + $p.s + '" -o "' + (Join-Path $dir "$($p.i).out") + '" "' + $url + '"'
-          $p.proc = Start-Process -FilePath 'curl.exe' -ArgumentList $cargs -NoNewWindow -PassThru
+          # X-Progress : le Worker renvoie chaque seconde « ack <octets> » ; -N les écrit tout de suite.
+          $cargs = '-sSN --fail-with-body -H "X-Progress: 1" -T "' + $bin + '" -H "X-Total-Size: ' + $size + '" -H "X-State: ' + $state + '" -H "X-Offset: ' + $p.s + '" -o "' + (Join-Path $dir "$($p.i).out") + '" "' + $url + '"'
+          $p.proc = Start-Process -FilePath 'curl.exe' -ArgumentList $cargs -NoNewWindow -PassThru -RedirectStandardError (Join-Path $dir "$($p.i).err")
           $null = $p.proc.Handle  # sans cela, PowerShell 5.1 ne lit pas ExitCode
           $null = $running.Add($p)
         }
@@ -478,15 +551,26 @@ function transfer {
         foreach ($p in @($running)) {
           if (-not $p.proc.HasExited) { continue }
           $running.Remove($p)
-          $reply = Get-Content -Raw -LiteralPath (Join-Path $dir "$($p.i).out") -ErrorAction SilentlyContinue
-          if ($p.proc.ExitCode -eq 0 -and $reply -like 'part *') { $done++; Remove-Item -LiteralPath (Join-Path $dir "$($p.i).bin") -ErrorAction SilentlyContinue; continue }
+          $reply = & $lines (Join-Path $dir "$($p.i).out") | Select-Object -Last 1
+          if ($p.proc.ExitCode -eq 0 -and $reply -like 'part *') { $done++; $doneBytes += $p.e - $p.s; Remove-Item -LiteralPath (Join-Path $dir "$($p.i).bin") -ErrorAction SilentlyContinue; continue }
           $p.tries++
           if ($p.tries -lt 3) { $queue.Enqueue($p); continue }
-          Write-Error ("transfer : partie $($p.i) : " + (Get-Content -Raw -LiteralPath (Join-Path $dir "$($p.i).out") -ErrorAction SilentlyContinue)); return
+          $why = & $lines (Join-Path $dir "$($p.i).err")
+          Write-Error ("transfer : partie $($p.i) : $reply $($why -join ' ')"); return
         }
-        Write-Progress -Activity "transfer $($item.Name)" -Status "$done/$($parts.Count) parties" -PercentComplete ([int]($done * 100 / $parts.Count))
+        $now = $clock.Elapsed.TotalSeconds
+        if ($now - $pt -lt 1) { continue }
+        $b = $doneBytes
+        foreach ($p in $running) { $b += & $acked (Join-Path $dir "$($p.i).out") }
+        $b = [Math]::Min($b, $size)
+        $v = [Math]::Max(0, ($b - $pb) / ($now - $pt)); $sp = if ($sp -gt 0) { 0.8 * $sp + 0.2 * $v } else { $v }; $pb = $b; $pt = $now
+        $status = '{0} % · {1} / {2} · {3:N1} Mo/s ({4:N0} Mbit/s) · {5}/{6} parties' -f [int][Math]::Floor($b * 100 / $size), (& $fmt $b), (& $fmt $size), ($sp / 1MB), ($sp * 8 / 1e6), $done, $parts.Count
+        $eta = if ($sp -gt 0) { [int](($size - $b) / $sp) } else { -1 }
+        Write-Progress -Activity "transfer $($item.Name)" -Status $status -PercentComplete ([int]($b * 100 / $size)) -SecondsRemaining $eta
       }
       Write-Progress -Activity "transfer" -Completed
+      $t = [Math]::Max(1, $clock.Elapsed.TotalSeconds)
+      Write-Host ('transfer : {0} en {1:hh\\:mm\\:ss}, {2:N1} Mo/s ({3:N0} Mbit/s) en moyenne' -f (& $fmt $size), [TimeSpan]::FromSeconds([int]$t), ($size / $t / 1MB), ($size / $t * 8 / 1e6))
       # 3. fin : toutes les réponses des parties, dans un fichier
       $all = Join-Path $dir 'parts.txt'
       ($parts | ForEach-Object { Get-Content -Raw -LiteralPath (Join-Path $dir "$($_.i).out") }) -join "\`n" | Set-Content -LiteralPath $all -Encoding ascii -NoNewline
