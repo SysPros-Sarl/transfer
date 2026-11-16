@@ -308,7 +308,9 @@ export class WsUploader {
       const pos = Number(v.getBigUint64(4, true));
       const type = v.getInt8(12);
       if (type < 0) this.err = new Error(`upload server error ${type}`);
-      else if (type === 1 || type === 2 || type === 7) this.pending.delete(pos);
+      else if (type === 1 || type === 2) this.pending.delete(pos);
+      // 7: this chunk completed the file; the token (type 4) follows on this connection.
+      else if (type === 7) { this.pending.delete(pos); this.sawFinal = true; }
       else if (type === 3) { const c = this.pending.get(pos); if (c && this.ws) this.rawSend(c); }
       else if (type === 4) { this.token = b.slice(14, 14 + b[13]); this.pending.clear(); }
       else if (type === 5) { try { this.ws?.close(1000); } catch {} this.ws = null; }
@@ -317,10 +319,11 @@ export class WsUploader {
     this.wake();
   }
 
-  async waitFor(cond) {
+  async waitFor(cond, deadline = Infinity) {
     for (;;) {
       if (this.err) throw this.err;
       if (cond()) return;
+      if (Date.now() > deadline) throw new Error("timed out waiting for the upload server");
       if (!this.ws) {
         if (++this.reconnects > 5) throw new Error("upload connection kept dropping");
         await sleep(2000);
@@ -344,7 +347,7 @@ export class WsUploader {
   }
 
   drain() { return this.waitFor(() => this.pending.size === 0); }
-  async finish() { await this.waitFor(() => this.token); return this.token; }
+  async finish(timeoutMs = Infinity) { await this.waitFor(() => this.token, Date.now() + timeoutMs); return this.token; }
   close() { try { this.ws?.close(1000); } catch {} }
 }
 

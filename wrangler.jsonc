@@ -25,7 +25,8 @@
 
   "vars": {
     // Taille des parties (Mio) des scripts /sh et /ps et de la page web. Cloudflare limite le
-    // corps d'une requête à 100 Mo (plans Free et Pro).
+    // corps d'une requête à 100 Mo (plans Free et Pro) ; la première partie fait 512 Kio de
+    // plus, donc 94 au maximum.
     "PART_MB": "90"
   }
 }

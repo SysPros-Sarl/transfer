@@ -249,6 +249,17 @@ function put(url, body, headers, onProgress) {
   });
 }
 
+async function putRetry(url, body, headers, onProgress) {
+  for (var tries = 1; ; tries++) {
+    try {
+      var res = await put(url, body, headers, onProgress);
+      if (res.status < 400) return res;
+      if (res.status < 500 || tries >= 3) throw new Error(res.text.trim());
+    } catch (e) { if (tries >= 3 || !/réseau/.test(e.message)) throw e; }
+    await new Promise(function (r) { setTimeout(r, 2000); });
+  }
+}
+
 function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; }
 
 async function send(file) {
@@ -257,21 +268,38 @@ async function send(file) {
   var once = document.getElementById("once").checked;
   if (once) name.textContent += " · 1 téléchargement";
   var url = (once ? "/1/" : "/") + encodeURIComponent(file.name);
-  var off = 0, state = "";
+  var show = function (n) { bar.style.width = (file.size ? Math.min(100, n / file.size * 100) : 100) + "%"; };
   try {
-    for (;;) {
-      var res, tries = 0;
-      for (;;) {
-        try {
-          res = await put(url, file.slice(off, off + PART), { "X-Total-Size": file.size, "X-Offset": off, "X-State": state },
-            function (n) { bar.style.width = (file.size ? Math.min(100, (off + n) / file.size * 100) : 100) + "%"; });
-          if (res.status < 500 || ++tries >= 3) break;
-        } catch (e) { if (++tries >= 3) throw e; }
-        await new Promise(function (r) { setTimeout(r, 2000); });
+    var res;
+    if (file.size <= PART) {
+      res = await putRetry(url, file, {}, show);
+    } else {
+      // Gros fichier : ouverture, parties ${PARALLEL} à la fois, puis fin avec les sommes de contrôle.
+      var init = (await putRetry(url, "", { "X-Total-Size": file.size }, function () {})).text.trim().split(" ");
+      var state = init[1], pp = +init[2], parts = [];
+      for (var i = 0, s = 0; s < file.size; i++) { var e = Math.min((i + 1) * pp + 524288, file.size); parts.push({ s: s, e: e, sent: 0 }); s = e; }
+      var outs = [], next = 0;
+      var worker = async function () {
+        while (next < parts.length) {
+          var k = next++, p = parts[k];
+          var r = await putRetry(url, file.slice(p.s, p.e), { "X-Total-Size": file.size, "X-State": state, "X-Offset": p.s },
+            function (n) { p.sent = n; show(parts.reduce(function (t, q) { return t + q.sent; }, 0)); });
+          p.sent = p.e - p.s; outs[k] = r.text.trim();
+        }
+      };
+      var workers = []; for (var w = 0; w < ${PARALLEL}; w++) workers.push(worker());
+      await Promise.all(workers);
+      var fin = function () { return putRetry(url, outs.join("\\n"), { "X-Total-Size": file.size, "X-State": state, "X-Finalize": "1" }, function () {}); };
+      try { res = await fin(); } catch (err) {
+        if (!/jeton/.test(err.message)) throw err;
+        // Le jeton de fin s'est perdu : on renvoie la dernière partie puis on retente.
+        var L = parts.length - 1;
+        outs[L] = (await putRetry(url, file.slice(parts[L].s, parts[L].e), { "X-Total-Size": file.size, "X-State": state, "X-Offset": parts[L].s }, function () {})).text.trim();
+        res = await fin();
       }
+    }
+    {
       var t = res.text.trim();
-      if (res.status >= 400) throw new Error(t);
-      if (t.indexOf("next ") === 0) { var p = t.split(" "); off = +p[1]; state = p[2]; continue; }
       var lines = t.split("\\n");
       bar.style.width = "100%";
       var out = el("div", "out"), a = el("a", "", lines[0]);
@@ -303,13 +331,15 @@ async function send(file) {
 
 // ---------------------------------------------------------------- scripts
 
+const PARALLEL = 4; // parties envoyées en même temps
+
 export function shScript(b, part) {
   return `# transfer : envoi de fichiers vers transfer.it via ${b} (SysPros)
 #   curl -sL ${b}/sh | sh -s <fichier>          # envoi direct, toute taille
 #   source <(curl -s ${b}/sh)                    # charge la commande dans ce shell
 #   transfer <fichier|dossier>                   # affiche les liens
 #   ... | transfer <nom>                         # envoie l'entrée standard (100 Mo max)
-# Au-delà de ${mb(part)} Mo, le fichier part en parties de ${mb(part)} Mo.
+# Au-delà de ${mb(part)} Mo, le fichier part en parties de ${mb(part)} Mo, ${PARALLEL} à la fois.
 
 _transfer_enc() { printf %s "$1" | od -An -v -tx1 | tr -d ' \\n' | sed 's/../%&/g'; }
 
@@ -332,29 +362,49 @@ transfer() {
   if [ "$_ts" -le "$_tp" ]; then
     curl -# --fail-with-body -T "$_tf" "$_tb/$(_transfer_enc "$_tn")"; _tr=$?
   else
-    _transfer_parts "$_tf" "$(_transfer_enc "$_tn")" "$_ts"; _tr=$?
+    _transfer_parts "$_tf" "$_tb/$(_transfer_enc "$_tn")" "$_ts"; _tr=$?
   fi
   [ -n "$_tt" ] && rm -f "$_tt"
   return $_tr
 }
 
+# Gros fichiers : 1. ouverture, 2. parties en parallèle, 3. fin (sommes de contrôle).
 _transfer_parts() {
-  _po=0; _pst=
-  while :; do
-    _try=0
-    while :; do
-      printf '\\rtransfer : %s %% ' "$(( _po * 100 / $3 ))" >&2
-      _pr=$(tail -c +"$(( _po + 1 ))" "$1" | head -c "$_tp" | curl -sS --fail-with-body -T - \\
-        -H "X-Total-Size: $3" -H "X-Offset: $_po" -H "X-State: $_pst" "$_tb/$2") && break
-      _try=$(( _try + 1 ))
-      if [ $_try -ge 3 ]; then printf '\\n%s\\n' "$_pr" >&2; return 1; fi
-      sleep 2
-    done
-    case $_pr in
-      next\\ *) _pr=\${_pr#next }; _po=\${_pr%% *}; _pst=\${_pr#* } ;;
-      *) printf '\\rtransfer : 100 %%\\n' >&2; printf '%s\\n' "$_pr"; return 0 ;;
-    esac
+  _pi=$(curl -sS --fail-with-body -X PUT -H "X-Total-Size: $3" -d '' "$2") || { printf '%s\\n' "$_pi" >&2; return 1; }
+  case $_pi in init\\ *) ;; *) printf '%s\\n' "$_pi" >&2; return 1 ;; esac
+  _pi=\${_pi#init }; TR_STATE=\${_pi%% *}; _pp=\${_pi#* }
+  TR_DIR=$(mktemp -d) || return 1
+  _i=0; _s=0
+  while [ "$_s" -lt "$3" ]; do
+    _e=$(( (_i + 1) * _pp + 524288 )); [ "$_e" -gt "$3" ] && _e=$3
+    echo "$_i $_s $_e" >> "$TR_DIR/list"
+    _i=$(( _i + 1 )); _s=$_e
   done
+  TR_FILE=$1; TR_URL=$2; TR_SIZE=$3; TR_N=$_i
+  export TR_FILE TR_URL TR_SIZE TR_STATE TR_DIR TR_N
+  cat > "$TR_DIR/part.sh" <<'PART'
+i=$1; s=$2; e=$3; try=0
+while :; do
+  if tail -c +"$(( s + 1 ))" "$TR_FILE" | head -c "$(( e - s ))" | curl -sS --fail-with-body -T - \\
+      -H "X-Total-Size: $TR_SIZE" -H "X-State: $TR_STATE" -H "X-Offset: $s" "$TR_URL" > "$TR_DIR/$i.out" 2> "$TR_DIR/$i.err"; then
+    echo "$i" >> "$TR_DIR/done"
+    printf '\\rtransfer : %s/%s parties ' "$(wc -l < "$TR_DIR/done" | tr -d ' ')" "$TR_N" >&2
+    exit 0
+  fi
+  try=$(( try + 1 ))
+  if [ "$try" -ge 3 ]; then printf '\\ntransfer : partie %s : ' "$i" >&2; cat "$TR_DIR/$i.out" "$TR_DIR/$i.err" >&2; exit 1; fi
+  sleep 2
+done
+PART
+  printf 'transfer : 0/%s parties ' "$TR_N" >&2
+  if ! xargs -P ${PARALLEL} -L 1 sh "$TR_DIR/part.sh" < "$TR_DIR/list"; then rm -rf "$TR_DIR"; return 1; fi
+  printf '\\n' >&2
+  for _try in 1 2; do
+    _pr=$(cat "$TR_DIR"/*.out | curl -sS --fail-with-body -X PUT -H "X-Total-Size: $3" -H "X-State: $TR_STATE" \\
+      -H "X-Finalize: 1" --data-binary @- "$2") && { printf '%s\\n' "$_pr"; rm -rf "$TR_DIR"; return 0; }
+    case $_pr in *jeton*) sh "$TR_DIR/part.sh" $(tail -n 1 "$TR_DIR/list") 2>/dev/null ;; *) break ;; esac
+  done
+  printf '%s\\n' "$_pr" >&2; rm -rf "$TR_DIR"; return 1
 }
 
 # Lancé par un pipe avec des arguments (curl -sL ${b}/sh | sh -s <fichier>) : envoi immédiat.
@@ -365,11 +415,12 @@ if [ $# -gt 0 ]; then transfer "$@"; fi
 export function ps1Script(b, part) {
   return `# transfer : envoi de fichiers vers transfer.it via ${b} (SysPros)
 #   irm ${b}/ps | iex; transfer <fichier|dossier>
-# Au-delà de ${mb(part)} Mo, le fichier part en parties de ${mb(part)} Mo. Utilise curl.exe (inclus dans Windows 10+).
+# Au-delà de ${mb(part)} Mo, le fichier part en parties de ${mb(part)} Mo, ${PARALLEL} à la fois.
+# Utilise curl.exe (inclus dans Windows 10+).
 
 function transfer {
   param([Parameter(Mandatory = $true)][string]$Path)
-  $base = '${b}'; $part = ${part}
+  $base = '${b}'; $part = ${part}; $parallel = ${PARALLEL}
   $item = Get-Item -LiteralPath $Path -ErrorAction Stop
   $tmp = $null
   if ($item.PSIsContainer) {
@@ -378,38 +429,71 @@ function transfer {
     $item = Get-Item -LiteralPath $tmp
   }
   $url = "$base/" + [Uri]::EscapeDataString($item.Name)
+  $size = $item.Length
   try {
-    if ($item.Length -le $part) {
+    if ($size -le $part) {
       & curl.exe -# --fail-with-body -T $item.FullName $url
       return
     }
-    $size = $item.Length; $off = [long]0; $state = ''
-    $partFile = [IO.Path]::GetTempFileName()
-    $buf = New-Object byte[] 1048576
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('transfer-' + [Guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $dir
     try {
-      while ($true) {
-        $in = [IO.File]::OpenRead($item.FullName); $out = [IO.File]::Create($partFile)
-        try {
-          $null = $in.Seek($off, 'Begin'); $left = [long]$part
-          while ($left -gt 0) {
-            $n = $in.Read($buf, 0, [int][Math]::Min([long]$buf.Length, $left))
-            if ($n -le 0) { break }
-            $out.Write($buf, 0, $n); $left -= $n
-          }
-        } finally { $in.Dispose(); $out.Dispose() }
-        Write-Progress -Activity "transfer $($item.Name)" -PercentComplete ([int]($off * 100 / $size))
-        $resp = $null
-        for ($try = 1; $try -le 3; $try++) {
-          $resp = & curl.exe -sS --fail-with-body -T $partFile -H "X-Total-Size: $size" -H "X-Offset: $off" -H "X-State: $state" $url
-          if ($LASTEXITCODE -eq 0) { break }
-          Start-Sleep -Seconds 2
-        }
-        if ($LASTEXITCODE -ne 0) { Write-Error "transfer : échec de l'envoi : $resp"; return }
-        $resp = ($resp -join "\`n").Trim()
-        if ($resp -like 'next *') { $p = $resp.Split(' '); $off = [long]$p[1]; $state = $p[2] }
-        else { Write-Progress -Activity "transfer" -Completed; return $resp }
+      # 1. ouverture
+      $empty = Join-Path $dir 'empty'; [IO.File]::WriteAllBytes($empty, [byte[]]@())
+      $init = (& curl.exe -sS --fail-with-body -T $empty -H "X-Total-Size: $size" $url) -join ''
+      if ($LASTEXITCODE -ne 0 -or $init -notlike 'init *') { Write-Error "transfer : $init"; return }
+      $f = $init.Split(' '); $state = $f[1]; $pp = [long]$f[2]
+      $parts = New-Object System.Collections.ArrayList
+      $s = [long]0; $i = 0
+      while ($s -lt $size) {
+        $e = [Math]::Min([long](($i + 1) * $pp + 524288), $size)
+        $null = $parts.Add([pscustomobject]@{ i = $i; s = $s; e = $e; tries = 0; proc = $null })
+        $s = $e; $i++
       }
-    } finally { Remove-Item -LiteralPath $partFile -ErrorAction SilentlyContinue }
+      # 2. parties, $parallel à la fois
+      $buf = New-Object byte[] 1048576
+      $queue = New-Object System.Collections.Queue (,$parts.ToArray())
+      $running = New-Object System.Collections.ArrayList
+      $done = 0
+      while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+        while ($running.Count -lt $parallel -and $queue.Count -gt 0) {
+          $p = $queue.Dequeue(); $bin = Join-Path $dir "$($p.i).bin"
+          if (-not (Test-Path $bin)) {
+            $in = [IO.File]::OpenRead($item.FullName); $out = [IO.File]::Create($bin)
+            try {
+              $null = $in.Seek($p.s, 'Begin'); $left = $p.e - $p.s
+              while ($left -gt 0) {
+                $n = $in.Read($buf, 0, [int][Math]::Min([long]$buf.Length, $left))
+                if ($n -le 0) { break }
+                $out.Write($buf, 0, $n); $left -= $n
+              }
+            } finally { $in.Dispose(); $out.Dispose() }
+          }
+          $cargs = '-sS --fail-with-body -T "' + $bin + '" -H "X-Total-Size: ' + $size + '" -H "X-State: ' + $state + '" -H "X-Offset: ' + $p.s + '" -o "' + (Join-Path $dir "$($p.i).out") + '" "' + $url + '"'
+          $p.proc = Start-Process -FilePath 'curl.exe' -ArgumentList $cargs -NoNewWindow -PassThru
+          $null = $p.proc.Handle  # sans cela, PowerShell 5.1 ne lit pas ExitCode
+          $null = $running.Add($p)
+        }
+        Start-Sleep -Milliseconds 300
+        foreach ($p in @($running)) {
+          if (-not $p.proc.HasExited) { continue }
+          $running.Remove($p)
+          $reply = Get-Content -Raw -LiteralPath (Join-Path $dir "$($p.i).out") -ErrorAction SilentlyContinue
+          if ($p.proc.ExitCode -eq 0 -and $reply -like 'part *') { $done++; Remove-Item -LiteralPath (Join-Path $dir "$($p.i).bin") -ErrorAction SilentlyContinue; continue }
+          $p.tries++
+          if ($p.tries -lt 3) { $queue.Enqueue($p); continue }
+          Write-Error ("transfer : partie $($p.i) : " + (Get-Content -Raw -LiteralPath (Join-Path $dir "$($p.i).out") -ErrorAction SilentlyContinue)); return
+        }
+        Write-Progress -Activity "transfer $($item.Name)" -Status "$done/$($parts.Count) parties" -PercentComplete ([int]($done * 100 / $parts.Count))
+      }
+      Write-Progress -Activity "transfer" -Completed
+      # 3. fin : toutes les réponses des parties, dans un fichier
+      $all = Join-Path $dir 'parts.txt'
+      ($parts | ForEach-Object { Get-Content -Raw -LiteralPath (Join-Path $dir "$($_.i).out") }) -join "\`n" | Set-Content -LiteralPath $all -Encoding ascii -NoNewline
+      $resp = & curl.exe -sS --fail-with-body -X PUT -H "X-Total-Size: $size" -H "X-State: $state" -H "X-Finalize: 1" --data-binary "@$all" $url
+      if ($LASTEXITCODE -ne 0) { Write-Error "transfer : $($resp -join ' ')"; return }
+      return $resp
+    } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
   } finally { if ($tmp) { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue } }
 }
 `;

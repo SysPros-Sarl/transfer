@@ -46,17 +46,26 @@ option « un seul téléchargement », bouton de suppression) et rappelle ces co
   d'upload de MEGA par WebSocket, puis rattache le fichier et ferme le transfert (`xp`, `xc`).
 - **Au-delà de 100 Mo** : Cloudflare refuse les requêtes plus grosses (HTTP 413) avant même le
   Worker. Les scripts `/sh` et `/ps` et la page web découpent le fichier en parties de 90 Mo
-  (`PART_MB`). Le Worker ne garde rien entre deux parties : chacune lui renvoie un jeton d'état.
+  (`PART_MB`) et en envoient **4 en même temps**. Pendant qu'une partie part de Cloudflare vers
+  MEGA, les autres arrivent : le débit reste constant au lieu d'alterner envoi et attente. Le
+  Worker ne garde rien entre les requêtes.
 
   ```
-  PUT /[n/]<nom>   X-Total-Size: <octets>   X-Offset: <position>   [X-State: <jeton>]
-  → 202 "next <position> <jeton>"   envoyer la partie suivante depuis <position>
-  → 200 <liens>                     terminé
+  1. PUT /[n/]<nom>  X-Total-Size: <octets>                       (corps vide)
+     → "init <état> <taille de partie>"
+  2. PUT /[n/]<nom>  X-Total-Size  X-State: <état>  X-Offset: <début>   (la partie, dans n'importe quel ordre)
+     → "part <début> <fin> <MAC des morceaux> [<jeton de fin>]"
+  3. PUT /[n/]<nom>  X-Total-Size  X-State  X-Finalize: 1         (corps : les réponses « part »)
+     → <liens>
   ```
 
-  Une partie fait au moins 1 Mio. Le Worker n'envoie que des morceaux MEGA complets ; la réponse
-  indique où la partie suivante doit commencer. Le jeton ne peut pointer que vers les serveurs
-  d'upload de MEGA (`*.userstorage.mega.co.nz`).
+  Les parties commencent à `0`, puis à `i × taille + 512 Kio` : ce sont des limites de morceaux
+  MEGA, chaque partie se chiffre donc seule. Le Worker vérifie à la fin que les parties couvrent
+  tout le fichier, assemble le MAC dans l'ordre et ferme le transfert. MEGA renvoie le jeton de
+  fin à la connexion qui complète le fichier ; s'il s'est perdu, le client renvoie la dernière
+  partie. L'état ne peut pointer que vers les serveurs d'upload de MEGA
+  (`*.userstorage.mega.co.nz`). `PART_MB` doit rester ≤ 94 (la première partie fait 512 Kio de plus
+  et doit passer sous les 100 Mo de Cloudflare).
 - **Téléchargement** (`/t/<id>/<nom>`) : MEGA déchiffre côté serveur quand on demande l'URL avec
   `pt: 1` (comme la page de transfer.it) ; le Worker relaie simplement les octets, avec les
   requêtes `Range` (reprise avec `wget -c` ou `curl -C -`).
@@ -117,12 +126,11 @@ node test/verify-mac.mjs fichier <lien>   # vérifie le MAC comme le télécharg
   transfer.it garde la clé de déchiffrement chez MEGA ; ce n'est pas du chiffrement de bout en bout.
 - **API non officielle** : le Worker utilise l'API privée de transfer.it. Si MEGA la change, il
   faudra l'adapter.
-- **Vitesse** : une partie de 90 Mo met de 2,5 à 20 s à arriver chez MEGA selon son serveur
-  d'upload (une seule connexion WebSocket par partie).
+- **Vitesse** : chaque partie passe par une seule connexion WebSocket vers MEGA ; c'est l'envoi de
+  4 parties en parallèle qui donne le débit. `curl -T` seul (jusqu'à 100 Mo) reste en une partie.
 
 ## Pistes
 
-- Plusieurs connexions WebSocket par partie (la page de MEGA en ouvre 8) pour accélérer les envois.
 - Envoi direct navigateur → MEGA depuis la page web (chiffrement dans le navigateur, sans passer
   par le Worker).
 - Choix de la durée d'expiration (`xm` avec `e`).

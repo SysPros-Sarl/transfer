@@ -1,6 +1,6 @@
 import {
   MIB, Api, MegaError, ChunkCrypto, WsUploader, chunkLen, isChunkBoundary, startTransfer, finalize,
-  encodeState, decodeState, listTransfer, plainDownloadUrl,
+  encodeState, decodeState, listTransfer, plainDownloadUrl, a32ToBytes, bytesToA32, b64u, unb64u, concat,
 } from "./mega.js";
 import { helpText, helpHtml, shScript, ps1Script } from "./pages.js";
 import { FAVICON_SVG } from "./favicon.js";
@@ -15,7 +15,7 @@ export default {
     const path = url.pathname;
     try {
       if (request.method === "PUT" || request.method === "POST") {
-        return await upload(request, base, path);
+        return await upload(request, base, path, partBytes);
       }
       if (request.method === "DELETE") {
         const d = path.match(/^\/(?:t\/)?([A-Za-z0-9_-]{12})\/([A-Za-z0-9_-]{20,})$/);
@@ -106,72 +106,63 @@ class ExactReader {
 // ---------------------------------------------------------------- upload
 //
 // Single request:  curl -T file https://host/        (body up to 100 MB)
-// Multipart:       PUT /name  with X-Total-Size, X-Offset and X-State (after
-//                  the first part). Each part may be any size >= 1 MiB; the
-//                  reply is "next <offset> <state>" until the last part,
-//                  whose reply is the links. A part's trailing partial MEGA
-//                  chunk is dropped, and the client resends it from <offset>.
+//
+// Parts (files over 100 MB), sent several at a time by the /sh and /ps
+// helpers and the web page:
+//   1. start   PUT /[n/]name  X-Total-Size            → "init <state> <part size>"
+//   2. parts   PUT /[n/]name  X-Total-Size X-State X-Offset + bytes, in any order
+//              and in parallel → "part <offset> <end> <chunk MACs> [<token>]"
+//              Part i covers [start(i), start(i+1)) with start(0) = 0 and
+//              start(i) = i × part size + 512 KiB: always MEGA chunk boundaries.
+//   3. finish  PUT /[n/]name  X-Total-Size X-State X-Finalize, body = all "part"
+//              replies → the links. MEGA's file MAC folds the chunk MACs in file
+//              order, which only the finish step can do once every part is in.
+// The Worker keeps nothing between requests: the state token carries the session.
 
-async function upload(request, base, path) {
+async function upload(request, base, path, partBytes) {
   // PUT /name, or PUT /<n>/name to allow only n downloads (PUT /<n> alone works
   // too, but curl then can't add the filename, so it's called "file").
   const segs = path.split("/").filter(Boolean).map(safeDecode);
   const maxDl = segs.length && /^\d{1,6}$/.test(segs[0]) ? Number(segs.shift()) || null : null;
   const name = segs.pop() || "file";
   const h = (k) => request.headers.get(k);
-  const multipart = h("x-total-size") !== null;
-  const total = multipart ? Number(h("x-total-size")) : h("content-length") !== null ? Number(h("content-length")) : null;
-  const offset = multipart ? Number(h("x-offset") || 0) : 0;
-  if (multipart && (!Number.isSafeInteger(total) || total < 0 || !Number.isSafeInteger(offset) || offset > total || !isChunkBoundary(offset))) {
-    return text("X-Total-Size / X-Offset invalides\n", 400);
-  }
 
-  let st;
-  if (multipart && h("x-state")) {
-    st = decodeState(h("x-state"));
-    if (st.o !== offset) return text(`X-Offset attendu : ${st.o}, reçu : ${offset}\n`, 409);
-  } else {
-    if (offset !== 0) return text("X-State est requis après la première partie\n", 400);
-    st = await startTransfer(name, total);
-  }
+  if (h("x-total-size") === null) return uploadWhole(request, base, name, maxDl);
+  const total = Number(h("x-total-size"));
+  if (!Number.isSafeInteger(total) || total < 0) return text("X-Total-Size invalide\n", 400);
 
+  if (!h("x-state")) {
+    const st = await startTransfer(name, total);
+    await request.body?.cancel();
+    return text(`init ${encodeState(st)} ${partBytes}\n`);
+  }
+  const st = decodeState(h("x-state"));
+  if (h("x-finalize") !== null) return finishParts(request, base, name, maxDl, st, total);
+  return uploadPart(request, st, total, Number(h("x-offset")));
+}
+
+// One request with the whole file (plain curl -T, or a pipe of unknown size).
+async function uploadWhole(request, base, name, maxDl) {
+  const len = request.headers.get("content-length");
+  const st = await startTransfer(name, len !== null ? Number(len) : null);
   const cc = await ChunkCrypto.create(st.k);
   const ws = new WsUploader(st.h, st.u);
   await ws.connect();
   const body = new ExactReader(request.body);
-  let pos = offset;
+  let pos = 0;
   let lastWasFull = true; // nothing sent yet counts as "at a boundary"
-  let final = false;
-
   try {
     for (;;) {
-      let want = chunkLen(pos);
-      if (multipart && pos + want > total) want = total - pos;
-      const data = want > 0 ? await body.read(want) : new Uint8Array(0);
-
-      if (data.length === 0) { final = !multipart || pos === total; break; }
-      if (data.length < want) {
-        // Short read. In a part that isn't the last one, it's the leftover of
-        // a chunk the client will resend in the next part.
-        if (multipart) break;
-        final = true;
-      }
+      const want = chunkLen(pos);
+      const data = await body.read(want);
+      if (data.length === 0) break;
       const { ct, mac } = await cc.encrypt(pos, data);
       await ws.send(pos, ct);
       st.m = await cc.fold(st.m, mac);
       pos += data.length;
-      lastWasFull = data.length === chunkLen(pos - data.length);
-      if (final) break;
-      if (multipart && pos === total) { final = true; break; }
+      lastWasFull = data.length === want;
+      if (!lastWasFull) break;
     }
-    await body.drain();
-
-    if (!final) {
-      await ws.drain();
-      st.o = pos;
-      return text(`next ${pos} ${encodeState(st)}\n`, 202);
-    }
-
     if (lastWasFull) {
       // Size sits on a chunk boundary: an empty chunk tells the server it's
       // done. Like MEGA's web uploader, it does not count towards the MAC
@@ -184,6 +175,79 @@ async function upload(request, base, path) {
   } finally {
     ws.close();
   }
+}
+
+async function uploadPart(request, st, total, offset) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= total || !isChunkBoundary(offset)) {
+    return text("X-Offset invalide : une partie doit commencer sur une limite de morceau MEGA\n", 400);
+  }
+  const cc = await ChunkCrypto.create(st.k);
+  const ws = new WsUploader(st.h, st.u);
+  await ws.connect();
+  const body = new ExactReader(request.body);
+  const macs = [];
+  let pos = offset;
+  let lastWasFull = true;
+  try {
+    while (pos < total) {
+      const want = Math.min(chunkLen(pos), total - pos);
+      const data = await body.read(want);
+      if (data.length === 0) break;
+      if (data.length < want) {
+        await body.drain();
+        return text(`partie mal alignée : elle doit finir sur une limite de morceau ou à la fin du fichier (finit à ${pos + data.length})\n`, 400);
+      }
+      const { ct, mac } = await cc.encrypt(pos, data);
+      await ws.send(pos, ct);
+      macs.push(a32ToBytes(mac));
+      pos += want;
+      lastWasFull = want === chunkLen(pos - want);
+    }
+    await body.drain();
+    if (pos === offset) return text("partie vide\n", 400);
+    // Last part of a file that ends on a chunk boundary: the empty end chunk.
+    if (pos === total && lastWasFull) await ws.send(pos, new Uint8Array(0));
+    await ws.drain();
+    // If this connection delivered the piece that completed the file, MEGA sends
+    // the completion token on it right after.
+    const token = ws.sawFinal || ws.token ? await ws.finish(30_000) : null;
+    return text(`part ${offset} ${pos} ${b64u(concat(...macs))}${token ? ` ${b64u(token)}` : ""}\n`);
+  } finally {
+    ws.close();
+  }
+}
+
+async function finishParts(request, base, name, maxDl, st, total) {
+  const parts = [];
+  let token = null;
+  for (const line of (await request.text()).split(/\r?\n/)) {
+    const p = line.trim().split(/\s+/);
+    if (p[0] !== "part" || p.length < 4) continue;
+    parts.push({ start: Number(p[1]), end: Number(p[2]), macs: unb64u(p[3]) });
+    if (p[4]) token = unb64u(p[4]);
+  }
+  parts.sort((a, b) => a.start - b.start);
+  let covered = 0;
+  for (const p of parts) {
+    if (p.start > covered) return text(`partie manquante : octets ${covered} à ${p.start}\n`, 400);
+    covered = Math.max(covered, p.end);
+  }
+  if (covered !== total) return text(`partie manquante : octets ${covered} à ${total}\n`, 400);
+  if (!token) return text("jeton de fin manquant : renvoyez la dernière partie\n", 409);
+
+  // File MAC: fold every chunk MAC in file order (a part sent twice counts once).
+  const cc = await ChunkCrypto.create(st.k);
+  let acc = [0, 0, 0, 0];
+  let at = 0;
+  for (const p of parts) {
+    if (p.end <= at) continue;
+    if (p.start !== at) return text("parties qui se chevauchent\n", 400);
+    for (let i = 0; i < p.macs.length; i += 16) acc = await cc.fold(acc, bytesToA32(p.macs.subarray(i, i + 16)));
+    at = p.end;
+  }
+  st.m = acc;
+  await finalize(st, name, token, maxDl);
+  return text(links(base, st, name), 200, { "x-url-delete": deleteUrl(base, st) });
 }
 
 // ---------------------------------------------------------------- download
