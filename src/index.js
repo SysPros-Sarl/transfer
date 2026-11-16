@@ -296,7 +296,10 @@ async function download(request, base, xh, wanted, forceFile = false) {
     if (wanted) h["content-disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(wanted)}`;
     return new Response(request.method === "HEAD" ? null : `${wanted || "fichiers"} partagés via transfer.syspros.ch\n`, { headers: h });
   }
+  const t0 = Date.now(), timing = [];
+  const mark = (n) => timing.push(`${n};dur=${Date.now() - t0}`);
   const { api, files } = await listTransfer(xh);
+  mark("f");
   if (!files.length) return text("transfert vide ou supprimé\n", 404);
 
   let file = wanted ? files.find((f) => f.name === wanted) : files.length === 1 ? files[0] : null;
@@ -314,8 +317,12 @@ async function download(request, base, xh, wanted, forceFile = false) {
 
   // MEGA decrypts server-side, so the Worker just streams the bytes through.
   const src = await plainDownloadUrl(api, xh, file);
+  mark("g");
   const range = request.headers.get("range");
   const up = await fetch(src, range ? { headers: { range } } : {});
+  mark("mega");
+  // Server-Timing : temps cumulés (ms) jusqu'à 'f', 'g' et aux en-têtes du serveur de MEGA.
+  headers["server-timing"] = timing.join(", ");
   if (!up.ok) return text(`le serveur de stockage a répondu HTTP ${up.status}\n`, up.status === 416 ? 416 : 502);
   for (const h of ["content-length", "content-range"]) {
     const v = up.headers.get(h);
