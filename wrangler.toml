@@ -1,0 +1,12 @@
+name = "transfer"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Part size (MiB) used by the transfer.sh / transfer.ps1 helpers and the web
+# uploader. Cloudflare caps one request body at 100 MB on Free/Pro plans.
+# Encryption costs ~2.5 ms of CPU per MiB, so a 90 MiB part needs ~0.25 s:
+# fine on Workers Paid (30 s default). The Free plan allows only 10 ms of CPU
+# per request, which is enough for files of a few MiB only.
+PART_MB = "90"
