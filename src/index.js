@@ -282,10 +282,18 @@ async function download(request, base, xh, wanted, forceFile = false) {
     const html = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
     if (request.method === "HEAD") return new Response(null, { headers: html });
     let info = null, status = 200;
-    try { info = await transferInfo(xh); }
-    catch (e) {
+    try {
+      info = await transferInfo(xh);
+      // Transferts envoyés avant le 16.11.2026 : pas de titre. Le nom vient alors de 'f',
+      // qui compte comme une ouverture (mc = n + 1 laisse cette marge sur un lien /n/).
+      if (!info.title && info.files === 1) {
+        const { files } = await listTransfer(xh);
+        if (files.length === 1) info.title = files[0].name;
+      }
+    } catch (e) {
       if (!(e instanceof MegaError)) throw e;
       status = e.code === -19 ? 410 : 404;
+      info = null;
     }
     return new Response(downloadHtml(base, xh, info), { status, headers: html });
   }
@@ -319,7 +327,9 @@ async function download(request, base, xh, wanted, forceFile = false) {
   const src = await plainDownloadUrl(api, xh, file);
   mark("g");
   const range = request.headers.get("range");
-  const up = await fetch(src, range ? { headers: { range } } : {});
+  // no-store : sinon le cache de Cloudflare peut s'interposer (.bin, .iso, .zip… font partie des
+  // extensions qu'il met en cache) et garder une copie déchiffrée du fichier.
+  const up = await fetch(src, { cache: "no-store", ...(range ? { headers: { range } } : {}) });
   mark("mega");
   // Server-Timing : temps cumulés (ms) jusqu'à 'f', 'g' et aux en-têtes du serveur de MEGA.
   headers["server-timing"] = timing.join(", ");

@@ -86,11 +86,17 @@ option « un seul téléchargement », bouton de suppression) et rappelle ces co
   le lit avec `xi`, qui renvoie titre, taille et nombre de fichiers sans ouvrir le transfert :
   afficher la page n'use pas de téléchargement (mesuré le 16.11.2026 : trois `xi` sur un lien
   `/1/`, le téléchargement passe ensuite). Lien épuisé, supprimé ou expiré : page « Ce lien
-  n'est plus disponible » (HTTP 410 ou 404). Transferts plus anciens, sans titre : le bouton
-  passe par `/t/<id>?dl`.
+  n'est plus disponible » (HTTP 410 ou 404). Transferts envoyés avant, sans titre : la page lit
+  le nom avec `f`, ce qui compte une ouverture (la marge de `mc = n + 1` sur un lien `/n/`).
+  Plusieurs fichiers : le bouton passe par `/t/<id>?dl`, qui en donne la liste.
 - **Téléchargement** (`/t/<id>/<nom>`) : MEGA déchiffre côté serveur quand on demande l'URL avec
   `pt: 1` (comme la page de transfer.it) ; le Worker relaie simplement les octets, avec les
-  requêtes `Range` (reprise avec `wget -c` ou `curl -C -`).
+  requêtes `Range` (reprise avec `wget -c` ou `curl -C -`), sans passer par le cache de
+  Cloudflare (`cache: "no-store"`). L'en-tête `Server-Timing` donne les temps cumulés jusqu'à
+  `f`, `g` et la réponse du serveur de MEGA :
+  `curl -s -D - -o /dev/null -r 0-0 https://transfer.syspros.ch/t/<id>/<nom>`. Mesuré le
+  16.11.2026 : 1,3 à 2 s avant le premier octet, dont 0,4 à 1,8 s d'attente du serveur de MEGA ;
+  quelques essais ont attendu 50 s, côté MEGA (direct depuis un poste, sans le Worker : 0,1 s).
 - **Suppression** : le jeton est la session MEGA jetable de l'envoi. `DELETE /t/<id>/<jeton>`
   supprime le transfert (`xd`) ; sans ce jeton, personne ne peut le supprimer ni le modifier.
 - **Nombre de téléchargements** (`/n/`) : le réglage `mc` de MEGA compte les ouvertures du

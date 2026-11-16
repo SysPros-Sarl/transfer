@@ -279,7 +279,7 @@ ${FOOTER}
 </html>`;
   }
   const name = info.title || (info.files > 1 ? `${info.files} fichiers` : "Fichier");
-  // Sans titre (transfert envoyé avant le 16.11.2026) : ?dl laisse le Worker trouver le fichier.
+  // Plusieurs fichiers (ou nom introuvable) : ?dl renvoie la liste des fichiers.
   const direct = info.title && info.files <= 1 ? `${page}/${encodeURIComponent(info.title)}` : `${page}?dl`;
   const desc = `${humanSize(info.size)} · partagé avec SysPros Transfert`;
   const og = `<meta name="description" content="${esc(desc)}">
