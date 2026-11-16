@@ -196,6 +196,11 @@ export const encodeState = (st) => b64u(te.encode(JSON.stringify(st)));
 export function decodeState(s) {
   const st = JSON.parse(td.decode(unb64u(s)));
   if (!st || !st.s || !Array.isArray(st.k) || !Array.isArray(st.m)) throw new Error("bad state");
+  // The state comes back from the client: only ever connect to MEGA's upload
+  // servers, so it can't turn the Worker into a WebSocket proxy.
+  if (!/^[a-z0-9-]+\.userstorage\.mega\.co\.nz$/.test(st.h) || !/^[A-Za-z0-9_/-]+$/.test(st.u)) {
+    throw new Error("bad state");
+  }
   return st;
 }
 
