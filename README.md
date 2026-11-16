@@ -87,7 +87,8 @@ option « un seul téléchargement », bouton de suppression) et rappelle ces co
   afficher la page n'use pas de téléchargement (mesuré le 16.11.2026 : trois `xi` sur un lien
   `/1/`, le téléchargement passe ensuite). Lien épuisé, supprimé ou expiré : page « Ce lien
   n'est plus disponible » (HTTP 410 ou 404). Transferts envoyés avant, sans titre : la page lit
-  le nom avec `f`, ce qui compte une ouverture (la marge de `mc = n + 1` sur un lien `/n/`).
+  le nom avec `f`, ce qui compte une ouverture (la marge de `mc = n + 1` sur un lien `/n/`) ;
+  les aperçus de liens n'y ont pas droit et affichent « Fichier ».
   Plusieurs fichiers : le bouton passe par `/t/<id>?dl`, qui en donne la liste.
 - **Téléchargement** (`/t/<id>/<nom>`) : MEGA déchiffre côté serveur quand on demande l'URL avec
   `pt: 1` (comme la page de transfer.it) ; le Worker relaie simplement les octets, avec les

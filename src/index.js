@@ -285,8 +285,9 @@ async function download(request, base, xh, wanted, forceFile = false) {
     try {
       info = await transferInfo(xh);
       // Transferts envoyés avant le 16.11.2026 : pas de titre. Le nom vient alors de 'f',
-      // qui compte comme une ouverture (mc = n + 1 laisse cette marge sur un lien /n/).
-      if (!info.title && info.files === 1) {
+      // qui compte comme une ouverture (mc = n + 1 laisse cette marge sur un lien /n/). Jamais
+      // pour les aperçus de liens : Slack, Teams ou WhatsApp les répètent et épuiseraient le lien.
+      if (!info.title && info.files === 1 && !isBot(request)) {
         const { files } = await listTransfer(xh);
         if (files.length === 1) info.title = files[0].name;
       }
