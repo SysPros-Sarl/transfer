@@ -96,7 +96,8 @@ option « un seul téléchargement », bouton de suppression) et rappelle ces co
   `f`, `g` et la réponse du serveur de MEGA :
   `curl -s -D - -o /dev/null -r 0-0 https://transfer.syspros.ch/t/<id>/<nom>`. Mesuré le
   16.11.2026 : 1,3 à 2 s avant le premier octet, dont 0,4 à 1,8 s d'attente du serveur de MEGA ;
-  quelques essais ont attendu 50 s, côté MEGA (direct depuis un poste, sans le Worker : 0,1 s).
+  le même jour, avant cette mesure, quatre essais avaient attendu de 11 à 55 s, sans cause
+  établie (depuis un poste, directement chez MEGA : 0,1 s).
 - **Suppression** : le jeton est la session MEGA jetable de l'envoi. `DELETE /t/<id>/<jeton>`
   supprime le transfert (`xd`) ; sans ce jeton, personne ne peut le supprimer ni le modifier.
 - **Nombre de téléchargements** (`/n/`) : le réglage `mc` de MEGA compte les ouvertures du
