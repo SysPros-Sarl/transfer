@@ -1,11 +1,9 @@
 import {
   MIB, Api, MegaError, ChunkCrypto, WsUploader, chunkLen, isChunkBoundary, startTransfer, finalize,
-  encodeState, decodeState, listTransfer, plainDownloadUrl, a32ToBytes, bytesToA32, b64u, unb64u, concat,
+  encodeState, decodeState, listTransfer, plainDownloadUrl, transferInfo, a32ToBytes, bytesToA32, b64u, unb64u, concat,
 } from "./mega.js";
-import { helpText, helpHtml, shScript, ps1Script, setParallel } from "./pages.js";
+import { helpText, helpHtml, downloadHtml, shScript, ps1Script, setParallel, PROMO_LINE } from "./pages.js";
 import { FAVICON_SVG } from "./favicon.js";
-
-const SHARE = "https://transfer.it/t/";
 
 export default {
   async fetch(request, env) {
@@ -43,7 +41,7 @@ export default {
       if (path === "/favicon.ico") return Response.redirect(`${base}/favicon.svg`, 301);
 
       const m = path.match(/^\/(?:t\/)?([A-Za-z0-9_-]{12})(?:\/(.*))?$/);
-      if (m) return await download(request, base, m[1], m[2] ? safeDecode(m[2]) : "");
+      if (m) return await download(request, base, m[1], m[2] ? safeDecode(m[2]) : "", url.searchParams.has("dl"));
       return text("introuvable\n", 404);
     } catch (e) {
       console.error(e);
@@ -67,7 +65,8 @@ const encName = (n) => encodeURIComponent(n).replace(/%2F/g, "/");
 
 const deleteUrl = (base, st) => `${base}/t/${st.x}/${st.s}`;
 function links(base, st, name) {
-  return `${SHARE}${st.x}\n${base}/t/${st.x}/${encName(name)}\nsupprimer : curl -X DELETE ${deleteUrl(base, st)}\n`;
+  // 1re ligne : la page de téléchargement SysPros ; 2e : le lien direct (curl -O, wget).
+  return `${base}/t/${st.x}\n${base}/t/${st.x}/${encName(name)}\nsupprimer : curl -X DELETE ${deleteUrl(base, st)}\n\n${PROMO_LINE}\n`;
 }
 
 // Link-preview bots (chat apps) must not use up a limited download.
@@ -276,15 +275,27 @@ async function finishParts(request, base, name, maxDl, st, total) {
 
 // ---------------------------------------------------------------- download
 
-async function download(request, base, xh, wanted) {
-  // Every listing of a transfer counts against its download limit, so HEAD
-  // requests and link-preview bots must not touch MEGA at all.
+async function download(request, base, xh, wanted, forceFile = false) {
+  // /t/<id> in a browser, or fetched by a link-preview bot: the SysPros download page.
+  // It only uses 'xi', which does not count against the download limit.
+  if (!wanted && !forceFile && (wantsHtml(request) || isBot(request))) {
+    const html = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
+    if (request.method === "HEAD") return new Response(null, { headers: html });
+    let info = null, status = 200;
+    try { info = await transferInfo(xh); }
+    catch (e) {
+      if (!(e instanceof MegaError)) throw e;
+      status = e.code === -19 ? 410 : 404;
+    }
+    return new Response(downloadHtml(base, xh, info), { status, headers: html });
+  }
+  // Every listing of a transfer ('f') counts against its download limit, so HEAD
+  // requests and link-preview bots must not reach it.
   if (request.method === "HEAD" || isBot(request)) {
     const h = { "accept-ranges": "bytes", "content-type": wanted ? "application/octet-stream" : "text/plain" };
     if (wanted) h["content-disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(wanted)}`;
     return new Response(request.method === "HEAD" ? null : `${wanted || "fichiers"} partagés via transfer.syspros.ch\n`, { headers: h });
   }
-  if (!wanted && wantsHtml(request)) return Response.redirect(SHARE + xh, 302);
   const { api, files } = await listTransfer(xh);
   if (!files.length) return text("transfert vide ou supprimé\n", 404);
 

@@ -9,14 +9,22 @@ const SUPPORT_PHONE = "021 501 89 00";
 const FONTS_CSS = "https://fonts.googleapis.com/css2?family=Public+Sans:wght@400..800&family=Martian+Mono:wght@400..700&display=swap";
 const CHROME = { light: "#e4ecf8", dark: "#09101a" };
 
+// Textes de présentation, repris de syspros.ch (Website/src/i18n/fr.ts : meta.home, hero).
+const TAGLINE = "Infogérance, cybersécurité et cloud suisse pour les PME de Suisse romande.";
+const PROMO_TITLE = "Votre IT stable, documentée, sécurisée.";
+const PROMO_TEXT = "SysPros gère l'informatique des PME de Suisse romande : réseau, postes, serveurs, cloud, cybersécurité et sauvegardes, avec une documentation à jour et des règles écrites.";
+// Ligne ajoutée aux réponses texte (envois, aide curl) : un peu de promotion, sans gêner
+// qui lit seulement les premières lignes.
+export const PROMO_LINE = `-- SysPros · infogérance, cybersécurité et cloud pour les PME de Suisse romande · ${SITE_URL}`;
+
 const mb = (bytes) => Math.round(bytes / 1048576);
-const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const ID = "AbCdEfGhIjKl";
 const examples = (b, part) => ({
   main: [
     ["Envoyer (jusqu'à 100 Mo)", `curl -T rapport.pdf ${b}`],
-    ["Vous recevez", `https://transfer.it/t/${ID}\n${b}/t/${ID}/rapport.pdf\nsupprimer : curl -X DELETE ${b}/t/${ID}/<jeton>`],
+    ["Vous recevez", `${b}/t/${ID}\n${b}/t/${ID}/rapport.pdf\nsupprimer : curl -X DELETE ${b}/t/${ID}/<jeton>`],
     ["Un seul téléchargement (/5/ pour 5)", `curl -T rapport.pdf ${b}/1/`],
     ["Toute taille, ou un dossier", `curl -sL ${b}/sh | sh -s gros.iso\ncurl -sL ${b}/1/sh | sh -s gros.iso    # 1 téléchargement`],
   ],
@@ -30,14 +38,16 @@ const examples = (b, part) => ({
 
 export function helpText(b, part) {
   const ex = examples(b, part);
-  return `transfer : envoi de fichiers avec curl, liens transfer.it (SysPros)
+  return `transfer : envoi de fichiers avec curl, par SysPros
 
 ${[...ex.main, ...ex.more].map(([t, c]) => `${t} :\n${c.replace(/^/gm, "  ")}`).join("\n\n")}
 
 Les liens restent valables 90 jours. Cloudflare limite une requête à 100 Mo :
 les scripts /sh et /ps envoient les fichiers plus gros en parties de ${mb(part)} Mo.
 Toute personne qui a le lien peut télécharger le fichier.
-Support : ${SUPPORT_EMAIL} · ${SUPPORT_PHONE} · ${SITE_URL}
+
+Qui est SysPros ? ${PROMO_TEXT}
+Contact : ${SUPPORT_EMAIL} · ${SUPPORT_PHONE} · ${SITE_URL}
 `;
 }
 
@@ -149,6 +159,27 @@ code{font:500 12.5px/1.7 var(--font-mono)}
 .more .grid{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px}
 .more .card{padding:20px}
 .note{margin:20px 0 0;font-size:14px;color:var(--muted)}
+.btn-primary{background:var(--brand);color:#fff}
+.btn-primary:hover{background:var(--brand-hover)}
+.btn-lg{min-height:52px;padding:0 28px;font-size:16px}
+.btn svg{width:18px;height:18px;flex:none}
+.fname{font-size:clamp(26px,4vw,44px);overflow-wrap:anywhere}
+.meta{display:flex;flex-wrap:wrap;gap:6px 16px;margin:0;font:500 13px/1.6 var(--font-mono);color:var(--muted)}
+.dl{margin-top:28px;padding:24px;display:grid;grid-template-columns:minmax(0,1fr);gap:20px}
+.dl .row{display:flex;align-items:center;gap:16px}
+.dl .file-ico{display:grid;flex:none;place-items:center;width:52px;height:52px;border-radius:14px;background:var(--surface-2);color:var(--mark)}
+.dl .file-ico svg{width:26px;height:26px}
+.dl .row .meta{display:block}
+.dl .row strong{display:block;overflow-wrap:anywhere;font-size:16px}
+.dl h3{margin:0 0 8px}
+.dl .note{margin:0}
+.promo{padding:24px;display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+.promo .send code{overflow-wrap:anywhere}
+.promo h2{border:0;padding:0;font-size:22px;line-height:1.25}
+.promo p{margin:0;color:var(--muted)}
+.promo .actions{display:flex;flex-wrap:wrap;gap:10px}
+.promo .send{padding-top:14px;border-top:1px solid var(--border);font-size:14px}
+.promo .send a{color:var(--mark);font-weight:600}
 .site-foot{background:var(--surface);border-top:1px solid var(--border)}
 .site-foot .container{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 40px;padding-top:28px;padding-bottom:28px}
 .foot-brand{display:flex;flex-wrap:wrap;align-items:center;gap:10px 20px;max-width:560px;font-size:14px;color:var(--muted)}
@@ -169,10 +200,10 @@ const THEME_TOGGLE = `<button type="button" class="btn-icon" data-theme-toggle a
 
 const block = ([t, c]) => `<h3>${esc(t)}</h3><pre><code>${esc(c)}</code></pre>`;
 
-export function helpHtml(b, part) {
-  const ex = examples(b, part);
-  const tel = "tel:+41" + SUPPORT_PHONE.replace(/\D/g, "").replace(/^0/, "");
-  return `<!doctype html>
+const TEL = "tel:+41" + SUPPORT_PHONE.replace(/\D/g, "").replace(/^0/, "");
+
+// Début de page commun (head, barre du haut) et pied de page, comme hudu-qr et syspros.ch.
+const pageTop = (title, extraHead = "") => `<!doctype html>
 <html lang="fr">
 <head>
 <meta charset="utf-8">
@@ -181,8 +212,8 @@ export function helpHtml(b, part) {
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="${CHROME.light}">
 <script>${THEME_BOOT}</script>
-<title>Transfert · SysPros</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>${esc(title)}</title>
+${extraHead}<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
 <link rel="stylesheet" href="${FONTS_CSS}">
@@ -196,6 +227,101 @@ export function helpHtml(b, part) {
     ${THEME_TOGGLE}
   </div>
 </div></header>
+`;
+
+const FOOTER = `<footer class="site-foot"><div class="container">
+  <div class="foot-brand">${LOGO}<span>${TAGLINE}</span></div>
+  <nav class="foot-links" aria-label="Contact"><a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a><a href="${TEL}">${SUPPORT_PHONE}</a><a href="${SITE_URL}">syspros.ch</a></nav>
+</div></footer>`;
+
+// Taille lisible, à la française (virgule décimale).
+export function humanSize(n) {
+  const f = (x, d) => x.toFixed(d).replace(".", ",");
+  if (n < 1024) return `${n} octets`;
+  if (n < 1048576) return `${f(n / 1024, 0)} Ko`;
+  if (n < 1073741824) return `${f(n / 1048576, n < 10485760 ? 1 : 0)} Mo`;
+  return `${f(n / 1073741824, 2)} Go`;
+}
+
+const ICON_DL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`;
+const ICON_FILE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>`;
+
+const PROMO_ASIDE = (b) => `<aside class="card promo">
+      <p class="kicker">Qui est SysPros ?</p>
+      <h2>${PROMO_TITLE}</h2>
+      <p>${PROMO_TEXT}</p>
+      <div class="actions">
+        <a class="btn btn-primary" href="${SITE_URL}/contact">Discuter de votre projet</a>
+        <a class="btn btn-ghost" href="${SITE_URL}">Découvrir SysPros</a>
+      </div>
+      <p class="send">Vous aussi, envoyez un fichier en un lien : <a href="${b}/">transfer.syspros.ch</a>, par glisser-déposer ou avec <code>curl -T fichier ${b.replace(/^https?:\/\//, "")}</code>.</p>
+    </aside>`;
+
+// Page de téléchargement d'un transfert (/t/<id> ouvert dans un navigateur, ou aperçu de
+// lien). info vient de 'xi' : elle n'use pas de téléchargement. info = null : lien mort.
+export function downloadHtml(b, xh, info) {
+  const page = `${b}/t/${xh}`;
+  if (!info) {
+    return `${pageTop("Lien expiré · SysPros", `<meta property="og:title" content="Lien expiré">\n<meta property="og:site_name" content="SysPros">\n`)}
+<main class="site-main container">
+  <div class="layout">
+    <section>
+      <p class="kicker">Fichier partagé</p>
+      <h1>Ce lien n'est plus disponible.</h1>
+      <p class="lead">Le transfert a expiré (les liens restent valables 90 jours), il a été supprimé, ou il a atteint son nombre de téléchargements. Demandez un nouveau lien à la personne qui vous l'a envoyé.</p>
+    </section>
+    ${PROMO_ASIDE(b)}
+  </div>
+</main>
+
+${FOOTER}
+</body>
+</html>`;
+  }
+  const name = info.title || (info.files > 1 ? `${info.files} fichiers` : "Fichier");
+  // Sans titre (transfert envoyé avant le 16.11.2026) : ?dl laisse le Worker trouver le fichier.
+  const direct = info.title && info.files <= 1 ? `${page}/${encodeURIComponent(info.title)}` : `${page}?dl`;
+  const desc = `${humanSize(info.size)} · partagé avec SysPros Transfert`;
+  const og = `<meta name="description" content="${esc(desc)}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SysPros">
+<meta property="og:title" content="${esc(name)}">
+<meta property="og:description" content="${esc(desc)}">
+<meta property="og:url" content="${esc(page)}">
+`;
+  return `${pageTop(`${name} · SysPros`, og)}
+<main class="site-main container">
+  <div class="layout">
+    <section>
+      <p class="kicker">Fichier partagé</p>
+      <h1 class="fname">${esc(name)}</h1>
+      <p class="meta"><span>${humanSize(info.size)}</span><span>Lien valable 90 jours après l'envoi</span></p>
+      <div class="card dl">
+        <div class="row">
+          <span class="file-ico">${ICON_FILE}</span>
+          <div><strong>${esc(name)}</strong><span class="meta">${humanSize(info.size)}</span></div>
+        </div>
+        <a class="btn btn-primary btn-lg" href="${esc(direct)}" download>${ICON_DL}Télécharger</a>
+        <div>
+          <h3>En ligne de commande</h3>
+          <pre><code>curl -O ${esc(direct)}
+wget -c ${esc(direct)}</code></pre>
+        </div>
+        <p class="note">Toute personne qui a ce lien peut télécharger le fichier. Il est chiffré et stocké chez transfer.it (MEGA), puis remis par transfer.syspros.ch.</p>
+      </div>
+    </section>
+    ${PROMO_ASIDE(b)}
+  </div>
+</main>
+
+${FOOTER}
+</body>
+</html>`;
+}
+
+export function helpHtml(b, part) {
+  const ex = examples(b, part);
+  return `${pageTop("Transfert · SysPros")}
 
 <main class="site-main container">
   <div class="layout">
@@ -224,10 +350,7 @@ export function helpHtml(b, part) {
   </section>
 </main>
 
-<footer class="site-foot"><div class="container">
-  <div class="foot-brand">${LOGO}<span>Infogérance, cybersécurité et cloud suisse pour les PME de Suisse romande.</span></div>
-  <nav class="foot-links" aria-label="Contact"><a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a><a href="${tel}">${SUPPORT_PHONE}</a><a href="${SITE_URL}">syspros.ch</a></nav>
-</div></footer>
+${FOOTER}
 
 <script>
 var PART = ${part};

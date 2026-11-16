@@ -9,10 +9,14 @@ Sans compte, quelle que soit la taille ; les liens restent valables 90 jours.
 curl -T rapport.pdf ──► transfer.syspros.ch ──► MEGA (transfer.it)
                          Cloudflare Worker       session anonyme jetable,
                          chiffre en flux         fichier chiffré par WebSocket
-       ◄── https://transfer.it/t/AbCdEfGhIjKl
-           https://transfer.syspros.ch/t/AbCdEfGhIjKl/rapport.pdf
+       ◄── https://transfer.syspros.ch/t/AbCdEfGhIjKl                (page de téléchargement)
+           https://transfer.syspros.ch/t/AbCdEfGhIjKl/rapport.pdf    (lien direct, curl -O)
            supprimer : curl -X DELETE https://transfer.syspros.ch/t/AbCdEfGhIjKl/<jeton>
 ```
+
+Le lien ouvert dans un navigateur montre une page aux couleurs de SysPros : nom et taille du
+fichier, bouton « Télécharger », commandes curl et wget, et un encadré « Qui est SysPros ? ».
+Les réponses texte (envois, aide `curl transfer.syspros.ch`) finissent par une ligne SysPros.
 
 ## Utilisation
 
@@ -77,6 +81,13 @@ option « un seul téléchargement », bouton de suppression) et rappelle ces co
   partie. L'état ne peut pointer que vers les serveurs d'upload de MEGA
   (`*.userstorage.mega.co.nz`). `PART_MB` doit rester ≤ 94 (la première partie fait 512 Kio de plus
   et doit passer sous les 100 Mo de Cloudflare).
+- **Page de téléchargement** (`/t/<id>` dans un navigateur ou un aperçu de lien) : le Worker
+  pose le nom du fichier comme titre du transfert à la fermeture (`xm` avec `t`), puis la page
+  le lit avec `xi`, qui renvoie titre, taille et nombre de fichiers sans ouvrir le transfert :
+  afficher la page n'use pas de téléchargement (mesuré le 16.11.2026 : trois `xi` sur un lien
+  `/1/`, le téléchargement passe ensuite). Lien épuisé, supprimé ou expiré : page « Ce lien
+  n'est plus disponible » (HTTP 410 ou 404). Transferts plus anciens, sans titre : le bouton
+  passe par `/t/<id>?dl`.
 - **Téléchargement** (`/t/<id>/<nom>`) : MEGA déchiffre côté serveur quand on demande l'URL avec
   `pt: 1` (comme la page de transfer.it) ; le Worker relaie simplement les octets, avec les
   requêtes `Range` (reprise avec `wget -c` ou `curl -C -`).
@@ -85,9 +96,9 @@ option « un seul téléchargement », bouton de suppression) et rappelle ces co
 - **Nombre de téléchargements** (`/n/`) : le réglage `mc` de MEGA compte les ouvertures du
   transfert (`f`), pas les URL de téléchargement, et bloque le transfert dès la `mc`-ième
   ouverture. Un téléchargement fait une ouverture, donc le Worker pose `mc = n + 1`. Les requêtes
-  HEAD, les aperçus de liens (Slack, WhatsApp, Teams…) et la redirection de `/t/<id>` vers
-  transfer.it n'ouvrent pas le transfert. Ouvrir la page transfer.it compte comme un
-  téléchargement, une reprise avec `wget -c` aussi.
+  HEAD, les aperçus de liens (Slack, WhatsApp, Teams…) et la page `/t/<id>` n'ouvrent pas le
+  transfert. Ouvrir la page transfer.it du transfert compte comme un téléchargement, une
+  reprise avec `wget -c` aussi.
 - **Durée** : MEGA fixe l'expiration à 90 jours après l'envoi (mesuré : `e - ts = 7 776 000 s`).
 - **Intégrité** : le morceau vide de fin (fichier qui se termine pile sur une limite de morceau)
   n'entre pas dans le MAC, comme dans l'uploader de MEGA ; sinon la page de transfer.it signale
@@ -134,7 +145,7 @@ node test/verify-mac.mjs fichier <lien>   # vérifie le MAC comme le télécharg
 | `/<nom>`, `/<n>/<nom>` | PUT, POST | Envoi, en une fois ou par parties ; `n` = nombre de téléchargements |
 | `/sh`, `/<n>/sh` | GET | Script shell (bash, zsh, sh) |
 | `/ps`, `/<n>/ps` | GET | Script PowerShell |
-| `/t/<id>` | GET | Navigateur : redirection vers transfer.it ; curl : le fichier, ou la liste s'il y en a plusieurs |
+| `/t/<id>` | GET | Navigateur ou aperçu de lien : page de téléchargement SysPros ; curl (ou `?dl`) : le fichier, ou la liste s'il y en a plusieurs |
 | `/t/<id>/<nom>` | GET, HEAD | Téléchargement (avec `Range`) |
 | `/t/<id>/<jeton>` | DELETE | Suppression du transfert |
 | `/favicon.svg` | GET | Icône SysPros |

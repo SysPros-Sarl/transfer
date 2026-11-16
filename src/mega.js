@@ -362,8 +362,26 @@ export async function finalize(st, name, token, maxDownloads = null) {
   // transfer locks as soon as the mc-th listing happens, so the 'g' right after
   // it already fails. A download is one 'f' + one 'g' (in the Worker and on the
   // transfer.it page), so n downloads need mc = n + 1. Measured 2026-11-16.
-  if (maxDownloads) await api.req({ a: "xm", xh: st.x, mc: maxDownloads + 1 });
+  // t: the transfer's title (the file name), which 'xi' returns without opening the
+  // transfer, so the download page can show it without using up a download.
+  const xm = { a: "xm", xh: st.x, t: b64u(new TextEncoder().encode(name)) };
+  if (maxDownloads) xm.mc = maxDownloads + 1;
+  await api.req(xm);
   await api.req({ a: "xc", xh: st.x });
+}
+
+// Transfer metadata from 'xi' (title, total size, file count). Unlike 'f', it does
+// not count against the download limit (measured 2026-11-16: three xi calls on a
+// one-download transfer, the download still worked). No x= on purpose.
+export async function transferInfo(xh) {
+  const r = await new Api().req({ a: "xi", xh });
+  const d = (Array.isArray(r) ? r[0] : r) || {};
+  let title = null;
+  if (typeof d.t === "string") {
+    try { title = new TextDecoder("utf-8", { fatal: true }).decode(unb64u(d.t)); } catch {}
+  }
+  const s = Array.isArray(d.size) ? d.size : [];
+  return { title, size: s[0] || 0, files: s[1] || 0 };
 }
 
 // ---------------------------------------------------------------- download
